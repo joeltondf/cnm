@@ -10,7 +10,9 @@ require_once __DIR__ . '/../templates/header.php';
                     <select id="ufSelect" class="form-select"></select>
                 </div>
                 <div class="col-12 col-md-4">
-                    <label for="municipioSelect" class="form-label">Município / Consolidados</label>
+                    <label for="municipioSearch" class="form-label">Buscar município</label>
+                    <input type="text" id="municipioSearch" class="form-control mb-2" placeholder="Digite para buscar" autocomplete="off">
+                    <label for="municipioSelect" class="form-label mt-2">Município / Consolidados</label>
                     <select id="municipioSelect" class="form-select" required></select>
                 </div>
                 <div class="col-12 col-md-2">
