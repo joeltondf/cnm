@@ -1,7 +1,6 @@
 <?php
 require_once __DIR__ . '/../config/config.php';
 require_once __DIR__ . '/../includes/helpers.php';
-require_once __DIR__ . '/../includes/siconfi_client.php';
 
 $codIbge   = get_query_param('cod_ibge');
 $exercicio = get_query_param('exercicio');
@@ -28,8 +27,6 @@ if ($exercicio <= 0 || $periodo < 1 || $periodo > 6) {
 
 $municipioNome = 'Consolidado';
 try {
-    ensure_rreo_data($pdo, $codIbge, $exercicio, $periodo);
-
     if ($codIbge === 'BR') {
         $municipioNome = 'Brasil';
         $sql = 'SELECT conta, coluna, SUM(valor) AS valor
@@ -84,17 +81,9 @@ try {
     $registros = $stmt->fetchAll();
 
     if (!$registros) {
-        $mensagem = 'Nenhum dado encontrado para os parâmetros informados.';
-
-        if ($codIbge === 'BR') {
-            $mensagem = 'Ainda não há dados consolidados do Brasil disponíveis. Consulte os municípios desejados para baixar e consolidar as informações automaticamente.';
-        } elseif (strpos($codIbge, 'UF-') === 0) {
-            $mensagem = 'Ainda não há dados consolidados para esta UF. Busque pelos municípios do estado para carregar os dados antes de visualizar o total.';
-        }
-
         json_response([
             'success' => false,
-            'message' => $mensagem,
+            'message' => 'Nenhum dado encontrado para os parâmetros informados.',
         ], 404);
         exit;
     }
@@ -136,11 +125,6 @@ try {
         'kpis'          => $kpis,
         'dados_brutos'  => $dadosBrutos,
     ]);
-} catch (RuntimeException $e) {
-    json_response([
-        'success' => false,
-        'message' => $e->getMessage(),
-    ], 502);
 } catch (PDOException $e) {
     json_response([
         'success' => false,
