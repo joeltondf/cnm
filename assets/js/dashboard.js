@@ -2,7 +2,10 @@ const state = {
     kpiData: null,
     comparativoData: null,
     charts: {},
+    estados: [],
 };
+
+let municipioSearchTimeout;
 
 function showAlert(target, message, type = 'danger') {
     const container = document.querySelector(target);
@@ -30,21 +33,87 @@ async function fetchJSON(url) {
     return response.json();
 }
 
-function populateSelect(select, options, placeholder) {
+function populateSelect(select, options, placeholder, selectedValue = '') {
     select.innerHTML = `<option value="">${placeholder}</option>`;
+    let hasSelected = false;
+
     options.forEach(option => {
         const opt = document.createElement('option');
         opt.value = option.value;
         opt.textContent = option.label;
+
+        if (selectedValue && option.value === selectedValue) {
+            opt.selected = true;
+            hasSelected = true;
+        }
+
         select.appendChild(opt);
     });
+
+    if (selectedValue && !hasSelected) {
+        select.value = '';
+    }
+}
+
+function getMunicipioConsolidadoOptions() {
+    const consolidado = [
+        { value: 'BR', label: '🇧🇷 Brasil (Consolidado)' },
+    ];
+
+    state.estados.forEach(estado => {
+        consolidado.push({ value: `UF-${estado.uf}`, label: `UF-${estado.uf} (Consolidado)` });
+    });
+
+    return consolidado;
+}
+
+async function loadMunicipios(query = '') {
+    const municipioSelect = document.getElementById('municipioSelect');
+    if (!municipioSelect) {
+        return;
+    }
+
+    const previousValue = municipioSelect.value;
+    const ufSelect = document.getElementById('ufSelect');
+    const params = new URLSearchParams();
+
+    if (ufSelect && ufSelect.value) {
+        params.append('uf', ufSelect.value);
+    }
+
+    if (query) {
+        params.append('q', query);
+    }
+
+    try {
+        const url = `/api/municipios.php${params.toString() ? `?${params.toString()}` : ''}`;
+        const municipios = await fetchJSON(url);
+
+        const municipioOptions = [
+            ...getMunicipioConsolidadoOptions(),
+            ...municipios.map(municipio => ({
+                value: municipio.cod_ibge,
+                label: `${municipio.ente} - ${municipio.uf}`,
+            })),
+        ];
+
+        const availableValues = new Set(municipioOptions.map(option => option.value));
+        const selectedValue = availableValues.has(previousValue) ? previousValue : '';
+
+        populateSelect(
+            municipioSelect,
+            municipioOptions,
+            'Selecione um município ou consolidado',
+            selectedValue,
+        );
+    } catch (error) {
+        console.error('Erro ao carregar municípios:', error);
+    }
 }
 
 async function loadEstadosMunicipios() {
-    const [estados, municipios] = await Promise.all([
-        fetchJSON('/api/estados.php'),
-        fetchJSON('/api/municipios.php'),
-    ]);
+    const estados = await fetchJSON('/api/estados.php');
+    state.estados = estados;
 
     const estadoOptions = estados.map(estado => ({
         value: estado.uf,
@@ -53,16 +122,7 @@ async function loadEstadosMunicipios() {
 
     populateSelect(document.getElementById('ufSelect'), estadoOptions, 'Selecione a UF');
 
-    const municipioOptions = [
-        { value: 'BR', label: '🇧🇷 Brasil (Consolidado)' },
-        ...estados.map(estado => ({ value: `UF-${estado.uf}`, label: `UF-${estado.uf} (Consolidado)` })),
-        ...municipios.map(municipio => ({
-            value: municipio.cod_ibge,
-            label: `${municipio.ente} - ${municipio.uf}`,
-        })),
-    ];
-
-    populateSelect(document.getElementById('municipioSelect'), municipioOptions, 'Selecione um município ou consolidado');
+    await loadMunicipios();
 }
 
 function renderKPIs(kpis) {
@@ -303,16 +363,18 @@ function exportarJSON() {
     URL.revokeObjectURL(url);
 }
 
-function handleUfChange(event) {
-    const uf = event.target.value;
-    const municipioSelect = document.getElementById('municipioSelect');
-    Array.from(municipioSelect.options).forEach(option => {
-        if (!option.value) return;
-        if (option.value === 'BR' || option.value.startsWith('UF-')) return;
-        const matches = uf ? option.textContent.includes(`- ${uf}`) : true;
-        option.hidden = !matches;
-    });
-    municipioSelect.value = '';
+function handleMunicipioSearch(event) {
+    const query = event.target.value.trim();
+    clearTimeout(municipioSearchTimeout);
+    municipioSearchTimeout = setTimeout(() => {
+        loadMunicipios(query);
+    }, 300);
+}
+
+function handleUfChange() {
+    const searchInput = document.getElementById('municipioSearch');
+    const query = searchInput ? searchInput.value.trim() : '';
+    loadMunicipios(query);
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -326,4 +388,5 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('formComparativo').addEventListener('submit', handleComparar);
     document.getElementById('exportarBtn').addEventListener('click', exportarJSON);
     document.getElementById('ufSelect').addEventListener('change', handleUfChange);
+    document.getElementById('municipioSearch').addEventListener('input', handleMunicipioSearch);
 });
