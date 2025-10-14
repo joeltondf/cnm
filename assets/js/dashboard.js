@@ -4,6 +4,7 @@ const state = {
     charts: {},
     estados: [],
     municipioOptions: [],
+    municipioConsolidadoOptions: [],
     municipioLookup: new Map(),
     municipioValueToLabel: new Map(),
     lastMunicipioQuery: null,
@@ -39,10 +40,17 @@ async function fetchJSON(url) {
 }
 
 function populateSelect(select, options, placeholder, selectedValue = '') {
-    select.innerHTML = `<option value="">${placeholder}</option>`;
+    select.innerHTML = '';
     let hasSelected = false;
 
-    options.forEach(option => {
+    if (placeholder) {
+        const placeholderOption = document.createElement('option');
+        placeholderOption.value = '';
+        placeholderOption.textContent = placeholder;
+        select.appendChild(placeholderOption);
+    }
+
+    const appendOption = (parent, option) => {
         const opt = document.createElement('option');
         opt.value = option.value;
         opt.textContent = option.label;
@@ -52,7 +60,18 @@ function populateSelect(select, options, placeholder, selectedValue = '') {
             hasSelected = true;
         }
 
-        select.appendChild(opt);
+        parent.appendChild(opt);
+    };
+
+    options.forEach(option => {
+        if (Array.isArray(option.options)) {
+            const group = document.createElement('optgroup');
+            group.label = option.label;
+            option.options.forEach(innerOption => appendOption(group, innerOption));
+            select.appendChild(group);
+        } else {
+            appendOption(select, option);
+        }
     });
 
     if (selectedValue && !hasSelected) {
@@ -61,15 +80,58 @@ function populateSelect(select, options, placeholder, selectedValue = '') {
 }
 
 function getMunicipioConsolidadoOptions() {
-    const consolidado = [
-        { value: 'BR', label: '🇧🇷 Brasil (Consolidado)' },
+    return [
+        { value: 'BR', label: 'Brasil (Consolidado)' },
     ];
+}
 
-    state.estados.forEach(estado => {
-        consolidado.push({ value: `UF-${estado.uf}`, label: `UF-${estado.uf} (Consolidado)` });
+function normalizeText(value) {
+    return value
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase();
+}
+
+function cacheMunicipioOptions(municipioOptions, consolidadoOptions) {
+    state.municipioOptions = municipioOptions;
+    state.municipioConsolidadoOptions = consolidadoOptions;
+    state.municipioLookup.clear();
+    state.municipioValueToLabel.clear();
+
+    const allOptions = [...consolidadoOptions, ...municipioOptions];
+
+    allOptions.forEach(option => {
+        state.municipioLookup.set(normalizeText(option.label), option.value);
+        state.municipioValueToLabel.set(option.value, option.label);
     });
+}
 
-    return consolidado;
+function updateMunicipioSuggestions(options) {
+    const datalist = document.getElementById('municipioSuggestions');
+    if (!datalist) {
+        return;
+    }
+
+    datalist.innerHTML = '';
+    options.slice(0, 50).forEach(option => {
+        const suggestion = document.createElement('option');
+        suggestion.value = option.label;
+        datalist.appendChild(suggestion);
+    });
+}
+
+function syncMunicipioInputWithSelect() {
+    const select = document.getElementById('municipioSelect');
+    const input = document.getElementById('municipioSearch');
+
+    if (!select || !input) {
+        return;
+    }
+
+    const label = state.municipioValueToLabel.get(select.value) || '';
+    if (input.value !== label) {
+        input.value = label;
+    }
 }
 
 function cacheMunicipioOptions(options) {
@@ -142,23 +204,27 @@ async function loadMunicipios(query = '') {
         const url = `/api/municipios.php${params.toString() ? `?${params.toString()}` : ''}`;
         const municipios = await fetchJSON(url);
 
-        const municipioOptions = [
-            ...getMunicipioConsolidadoOptions(),
-            ...municipios.map(municipio => ({
-                value: municipio.cod_ibge,
-                label: `${municipio.ente} - ${municipio.uf}`,
-            })),
-        ];
+        const consolidadoOptions = getMunicipioConsolidadoOptions();
+        const municipioOptions = municipios.map(municipio => ({
+            value: municipio.cod_ibge,
+            label: `${municipio.ente} - ${municipio.uf}`,
+        }));
 
-        cacheMunicipioOptions(municipioOptions);
+        cacheMunicipioOptions(municipioOptions, consolidadoOptions);
         updateMunicipioSuggestions(municipioOptions);
 
-        const availableValues = new Set(municipioOptions.map(option => option.value));
+        const availableValues = new Set([
+            ...consolidadoOptions.map(option => option.value),
+            ...municipioOptions.map(option => option.value),
+        ]);
         const selectedValue = availableValues.has(previousValue) ? previousValue : '';
 
         populateSelect(
             municipioSelect,
-            municipioOptions,
+            [
+                { label: 'Consolidados', options: consolidadoOptions },
+                { label: 'Municípios', options: municipioOptions },
+            ],
             'Selecione um município ou consolidado',
             selectedValue,
         );
@@ -456,7 +522,7 @@ function selectMunicipioFromInputValue(value) {
         return;
     }
 
-    const normalized = value.trim().toLowerCase();
+    const normalized = normalizeText(value.trim());
     if (normalized && state.municipioLookup.has(normalized)) {
         municipioSelect.value = state.municipioLookup.get(normalized);
     } else if (municipioSelect.value) {
