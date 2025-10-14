@@ -134,6 +134,45 @@ function syncMunicipioInputWithSelect() {
     }
 }
 
+function cacheMunicipioOptions(options) {
+    state.municipioOptions = options;
+    state.municipioLookup.clear();
+    state.municipioValueToLabel.clear();
+
+    options.forEach(option => {
+        state.municipioLookup.set(option.label.toLowerCase(), option.value);
+        state.municipioValueToLabel.set(option.value, option.label);
+    });
+}
+
+function updateMunicipioSuggestions(options) {
+    const datalist = document.getElementById('municipioSuggestions');
+    if (!datalist) {
+        return;
+    }
+
+    datalist.innerHTML = '';
+    options.slice(0, 50).forEach(option => {
+        const suggestion = document.createElement('option');
+        suggestion.value = option.label;
+        datalist.appendChild(suggestion);
+    });
+}
+
+function syncMunicipioInputWithSelect() {
+    const select = document.getElementById('municipioSelect');
+    const input = document.getElementById('municipioSearch');
+
+    if (!select || !input) {
+        return;
+    }
+
+    const label = state.municipioValueToLabel.get(select.value) || '';
+    if (input.value !== label) {
+        input.value = label;
+    }
+}
+
 async function loadMunicipios(query = '') {
     const municipioSelect = document.getElementById('municipioSelect');
     if (!municipioSelect) {
