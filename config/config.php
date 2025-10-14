@@ -3,9 +3,9 @@
 // Update the default values or use environment variables to set credentials securely.
 
 $DB_HOST = getenv('DB_HOST') ?: 'localhost';
-$DB_NAME = getenv('DB_NAME') ?: 'u371107598_cnm';
-$DB_USER = getenv('DB_USER') ?: 'u371107598_usercnm';
-$DB_PASS = getenv('DB_PASS') ?: '@Amora051307';
+$DB_NAME = getenv('DB_NAME') ?: 'dashboard_financeiro';
+$DB_USER = getenv('DB_USER') ?: 'usuario';
+$DB_PASS = getenv('DB_PASS') ?: 'senha';
 
 try {
     $pdo = new PDO(
