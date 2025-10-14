@@ -1,9 +1,9 @@
 <?php
 // Configurações globais do projeto
 const DB_HOST = 'localhost';
-const DB_NAME = 'siconfi_dashboard';
-const DB_USER = 'root';
-const DB_PASS = '';
+const DB_NAME = 'u371107598_cnm';
+const DB_USER = 'u371107598_usercnm';
+const DB_PASS = '@Amora051307';
 
 const API_BASE_URL = 'https://apidatalake.tesouro.gov.br/ords/siconfi/tt/';
 const API_RREO_ENDPOINT = 'rreo';
