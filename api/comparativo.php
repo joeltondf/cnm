@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../config/config.php';
 require_once __DIR__ . '/../includes/helpers.php';
+require_once __DIR__ . '/../includes/siconfi_client.php';
 
 $codIbge    = get_query_param('cod_ibge');
 $exercicioA = get_query_param('exercicioA');
@@ -30,6 +31,7 @@ $datasets = [];
 
 try {
     foreach ($periodos as $label => $info) {
+        ensure_rreo_data($pdo, $codIbge, $info['exercicio'], $info['periodo']);
         [$sql, $params] = buildBaseQuery($pdo, $codIbge, $info['exercicio'], $info['periodo']);
         $stmt = $pdo->prepare($sql);
         foreach ($params as $key => $value) {
@@ -53,9 +55,17 @@ try {
     }
 
     if (!$datasets['A'] && !$datasets['B']) {
+        $mensagem = 'Nenhum dado encontrado para os parâmetros informados.';
+
+        if ($codIbge === 'BR') {
+            $mensagem = 'Ainda não há dados consolidados do Brasil disponíveis para os períodos selecionados.';
+        } elseif (strpos($codIbge, 'UF-') === 0) {
+            $mensagem = 'Ainda não há dados consolidados para esta UF nos períodos informados.';
+        }
+
         json_response([
             'success' => false,
-            'message' => 'Nenhum dado encontrado para os parâmetros informados.',
+            'message' => $mensagem,
         ], 404);
         exit;
     }
@@ -87,6 +97,11 @@ try {
         'success'     => true,
         'comparativo' => $resultado,
     ]);
+} catch (RuntimeException $e) {
+    json_response([
+        'success' => false,
+        'message' => $e->getMessage(),
+    ], 502);
 } catch (PDOException $e) {
     json_response([
         'success' => false,
