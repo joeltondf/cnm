@@ -140,10 +140,23 @@ class SiconfiService
 
     public function getMunicipioNome(string $idEnte): ?string
     {
-        $stmt = $this->pdo->prepare('SELECT no_ente FROM rreo_registros WHERE id_ente = :id LIMIT 1');
+        $stmt = $this->pdo->prepare('SELECT nome FROM municipios WHERE id_ibge = :id LIMIT 1');
         $stmt->execute([':id' => $idEnte]);
         $row = $stmt->fetch();
-        return $row['no_ente'] ?? null;
+        if ($row && isset($row['nome'])) {
+            return $row['nome'];
+        }
+
+        $stmt = $this->pdo->prepare('SELECT no_ente FROM rreo_registros WHERE id_ente = :id LIMIT 1');
+        $stmt->execute([':id' => $idEnte]);
+        $fallback = $stmt->fetch();
+        return $fallback['no_ente'] ?? null;
+    }
+
+    public function getMunicipiosDisponiveis(): array
+    {
+        $stmt = $this->pdo->query('SELECT id_ibge, nome, uf_sigla FROM municipios ORDER BY uf_sigla, nome');
+        return $stmt->fetchAll();
     }
 
     public function getKpis(string $idEnte, int $ano, int $periodo, string $tipo): array

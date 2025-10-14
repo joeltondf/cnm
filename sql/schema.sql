@@ -3,6 +3,20 @@ CREATE TABLE IF NOT EXISTS api_cache (
     fetched_at DATETIME NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS municipios (
+    id_ibge INT NOT NULL PRIMARY KEY,
+    nome VARCHAR(255) NOT NULL,
+    uf_sigla CHAR(2) NOT NULL,
+    uf_nome VARCHAR(255) NOT NULL,
+    regiao_sigla CHAR(2) NOT NULL,
+    regiao_nome VARCHAR(255) NOT NULL,
+    microrregiao VARCHAR(255) NULL,
+    mesorregiao VARCHAR(255) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_municipios_uf (uf_sigla, nome)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS rreo_registros (
     id INT AUTO_INCREMENT PRIMARY KEY,
     id_ente VARCHAR(10) NOT NULL,

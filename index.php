@@ -22,6 +22,7 @@ $params = [
 
 $service = new SiconfiService();
 $errorMessage = null;
+$municipiosDisponiveis = $service->getMunicipiosDisponiveis();
 
 try {
     // Consulta/cached da API e persistência
@@ -131,9 +132,20 @@ $dashboardData = [
                             <option value="RREO Simplificado" <?php echo $params['co_tipo_demonstrativo'] === 'RREO Simplificado' ? 'selected' : ''; ?>>RREO Simplificado</option>
                         </select>
                     </div>
-                    <div>
-                        <label class="text-sm font-semibold text-gray-600">Código do Ente (IBGE)</label>
-                        <input type="text" name="id_ente" value="<?php echo htmlspecialchars($params['id_ente']); ?>" class="mt-1 w-full rounded-xl border-gray-200 focus:border-indigo-400 focus:ring-indigo-300" placeholder="Ex.: 3550308" required>
+                    <div class="sm:col-span-2">
+                        <label class="text-sm font-semibold text-gray-600">Município (IBGE)</label>
+                        <select name="id_ente" class="mt-1 w-full rounded-xl border-gray-200 focus:border-indigo-400 focus:ring-indigo-300" required>
+                            <option value="">Selecione um município</option>
+                            <?php foreach ($municipiosDisponiveis as $municipioOption): ?>
+                                <?php $selected = $municipioOption['id_ibge'] == $params['id_ente'] ? 'selected' : ''; ?>
+                                <option value="<?php echo htmlspecialchars((string)$municipioOption['id_ibge']); ?>" <?php echo $selected; ?>>
+                                    <?php echo htmlspecialchars($municipioOption['nome'] . ' - ' . $municipioOption['uf_sigla']); ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                        <?php if (empty($municipiosDisponiveis)): ?>
+                            <p class="text-sm text-red-500 mt-2">Nenhum município cadastrado. <a href="sync_municipios.php" class="underline">Sincronize a lista com o IBGE</a>.</p>
+                        <?php endif; ?>
                     </div>
                     <div>
                         <label class="text-sm font-semibold text-gray-600">Esfera</label>
