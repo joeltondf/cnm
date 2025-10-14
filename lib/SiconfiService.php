@@ -50,28 +50,98 @@ class SiconfiService
      */
     public function callSiconfiRREO(string $idEnte, int $ano, int $periodo, string $tipo, ?string $anexo = null, ?string $esfera = null): ?array
     {
-        $query = http_build_query(array_filter([
+        $baseQuery = array_filter([
             'an_exercicio' => $ano,
             'nr_periodo' => $periodo,
             'co_tipo_demonstrativo' => $tipo,
             'no_anexo' => $anexo,
             'co_esfera' => $esfera,
             'id_ente' => $idEnte,
-        ], fn($value) => $value !== null && $value !== ''));
+        ], fn($value) => $value !== null && $value !== '');
 
-        $url = API_BASE_URL . API_RREO_ENDPOINT . '?' . $query;
+        if (defined('API_ADDITIONAL_QUERY') && is_array(API_ADDITIONAL_QUERY)) {
+            $baseQuery = array_merge($baseQuery, array_filter(API_ADDITIONAL_QUERY, fn($value) => $value !== null && $value !== ''));
+        }
 
+        $limit = defined('API_PAGE_LIMIT') ? (int)API_PAGE_LIMIT : 1000;
+        if ($limit <= 0) {
+            $limit = 1000;
+        }
+
+        $maxPages = defined('API_MAX_PAGES') ? (int)API_MAX_PAGES : 50;
+        if ($maxPages <= 0) {
+            $maxPages = 1;
+        }
+
+        $headers = $this->buildApiHeaders();
+
+        $offset = 0;
+        $page = 0;
+        $allItems = [];
+        $nextUrl = null;
+
+        while (true) {
+            if ($page >= $maxPages) {
+                error_log(sprintf('Limite de páginas (%d) atingido ao consultar API SICONFI.', $maxPages));
+                break;
+            }
+
+            if ($nextUrl !== null) {
+                $requestUrl = $nextUrl;
+            } else {
+                $queryParams = array_merge($baseQuery, [
+                    'limit' => $limit,
+                    'offset' => $offset,
+                ]);
+                $requestUrl = API_BASE_URL . API_RREO_ENDPOINT . '?' . http_build_query($queryParams);
+            }
+
+            $response = $this->performApiRequest($requestUrl, $headers);
+            if ($response === null) {
+                return null;
+            }
+
+            $items = $this->extractItemsFromResponse($response);
+            if (!empty($items)) {
+                $allItems = array_merge($allItems, $items);
+            }
+
+            $hasMore = isset($response['hasMore']) ? (bool)$response['hasMore'] : false;
+            $nextUrl = $this->extractNextLink($response);
+            $page++;
+
+            if ($nextUrl !== null) {
+                continue;
+            }
+
+            if ($hasMore) {
+                $offset += $limit;
+                continue;
+            }
+
+            break;
+        }
+
+        return $allItems;
+    }
+
+    private function performApiRequest(string $url, array $headers): ?array
+    {
         $this->respectRateLimit();
 
-        $ch = curl_init($url);
-        curl_setopt_array($ch, [
+        $options = [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => 30,
-            CURLOPT_FAILONERROR => true,
-            CURLOPT_HTTPHEADER => [
-                'Accept: application/json',
-            ],
-        ]);
+            CURLOPT_FAILONERROR => false,
+            CURLOPT_HTTPHEADER => $headers,
+        ];
+
+        if (defined('API_USER_AGENT') && API_USER_AGENT !== '') {
+            $options[CURLOPT_USERAGENT] = API_USER_AGENT;
+        }
+
+        $ch = curl_init($url);
+        curl_setopt_array($ch, $options);
 
         $response = curl_exec($ch);
         if ($response === false) {
@@ -80,14 +150,89 @@ class SiconfiService
             return null;
         }
 
+        $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
+
+        if ($httpCode >= 400) {
+            error_log(sprintf('Erro HTTP %d ao consultar API SICONFI em %s', $httpCode, $url));
+            return null;
+        }
+
         $decoded = json_decode($response, true);
         if (!is_array($decoded)) {
             error_log('Resposta inválida da API SICONFI');
             return null;
         }
 
-        return $decoded['items'] ?? $decoded;
+        return $decoded;
+    }
+
+    private function extractItemsFromResponse(array $response): array
+    {
+        if (isset($response['items']) && is_array($response['items'])) {
+            return $response['items'];
+        }
+
+        if ($this->isSequentialArray($response)) {
+            return $response;
+        }
+
+        return [];
+    }
+
+    private function extractNextLink(array $response): ?string
+    {
+        if (!isset($response['links']) || !is_array($response['links'])) {
+            return null;
+        }
+
+        foreach ($response['links'] as $link) {
+            if (!is_array($link)) {
+                continue;
+            }
+
+            $rel = $link['rel'] ?? null;
+            $href = $link['href'] ?? null;
+
+            if ($rel === 'next' && is_string($href) && $href !== '') {
+                return $this->normalizeLink($href);
+            }
+        }
+
+        return null;
+    }
+
+    private function normalizeLink(string $link): string
+    {
+        if (preg_match('/^https?:/i', $link) === 1) {
+            return $link;
+        }
+
+        return rtrim(API_BASE_URL, '/') . '/' . ltrim($link, '/');
+    }
+
+    private function buildApiHeaders(): array
+    {
+        $headers = ['Accept: application/json'];
+
+        if (defined('API_HEADERS') && is_array(API_HEADERS) && !empty(API_HEADERS)) {
+            $headers = API_HEADERS;
+        }
+
+        if (defined('API_AUTHORIZATION') && API_AUTHORIZATION !== '') {
+            $headers[] = 'Authorization: ' . API_AUTHORIZATION;
+        }
+
+        return $headers;
+    }
+
+    private function isSequentialArray(array $data): bool
+    {
+        if ($data === []) {
+            return true;
+        }
+
+        return array_keys($data) === range(0, count($data) - 1);
     }
 
     /**
