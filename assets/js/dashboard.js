@@ -3,11 +3,6 @@ const state = {
     comparativoData: null,
     charts: {},
     estados: [],
-    municipioOptions: [],
-    municipioLookup: new Map(),
-    municipioValueToLabel: new Map(),
-    lastMunicipioQuery: null,
-    lastUfFilter: null,
 };
 
 let municipioSearchTimeout;
@@ -72,45 +67,6 @@ function getMunicipioConsolidadoOptions() {
     return consolidado;
 }
 
-function cacheMunicipioOptions(options) {
-    state.municipioOptions = options;
-    state.municipioLookup.clear();
-    state.municipioValueToLabel.clear();
-
-    options.forEach(option => {
-        state.municipioLookup.set(option.label.toLowerCase(), option.value);
-        state.municipioValueToLabel.set(option.value, option.label);
-    });
-}
-
-function updateMunicipioSuggestions(options) {
-    const datalist = document.getElementById('municipioSuggestions');
-    if (!datalist) {
-        return;
-    }
-
-    datalist.innerHTML = '';
-    options.slice(0, 50).forEach(option => {
-        const suggestion = document.createElement('option');
-        suggestion.value = option.label;
-        datalist.appendChild(suggestion);
-    });
-}
-
-function syncMunicipioInputWithSelect() {
-    const select = document.getElementById('municipioSelect');
-    const input = document.getElementById('municipioSearch');
-
-    if (!select || !input) {
-        return;
-    }
-
-    const label = state.municipioValueToLabel.get(select.value) || '';
-    if (input.value !== label) {
-        input.value = label;
-    }
-}
-
 async function loadMunicipios(query = '') {
     const municipioSelect = document.getElementById('municipioSelect');
     if (!municipioSelect) {
@@ -119,24 +75,15 @@ async function loadMunicipios(query = '') {
 
     const previousValue = municipioSelect.value;
     const ufSelect = document.getElementById('ufSelect');
-    const ufValue = ufSelect ? ufSelect.value : '';
-    const trimmedQuery = query.trim();
-
-    if (state.lastMunicipioQuery === trimmedQuery && state.lastUfFilter === ufValue) {
-        return;
-    }
-
     const params = new URLSearchParams();
 
-    if (ufValue && ufValue !== 'BR') {
-        params.append('uf', ufValue);
+    if (ufSelect && ufSelect.value) {
+        params.append('uf', ufSelect.value);
     }
 
-    if (trimmedQuery) {
-        params.append('q', trimmedQuery);
+    if (query) {
+        params.append('q', query);
     }
-
-    municipioSelect.disabled = true;
 
     try {
         const url = `/api/municipios.php${params.toString() ? `?${params.toString()}` : ''}`;
@@ -150,9 +97,6 @@ async function loadMunicipios(query = '') {
             })),
         ];
 
-        cacheMunicipioOptions(municipioOptions);
-        updateMunicipioSuggestions(municipioOptions);
-
         const availableValues = new Set(municipioOptions.map(option => option.value));
         const selectedValue = availableValues.has(previousValue) ? previousValue : '';
 
@@ -162,17 +106,8 @@ async function loadMunicipios(query = '') {
             'Selecione um município ou consolidado',
             selectedValue,
         );
-
-        if (!trimmedQuery) {
-            syncMunicipioInputWithSelect();
-        }
-
-        state.lastMunicipioQuery = trimmedQuery;
-        state.lastUfFilter = ufValue;
     } catch (error) {
         console.error('Erro ao carregar municípios:', error);
-    } finally {
-        municipioSelect.disabled = false;
     }
 }
 
@@ -180,15 +115,12 @@ async function loadEstadosMunicipios() {
     const estados = await fetchJSON('/api/estados.php');
     state.estados = estados;
 
-    const estadoOptions = [
-        { value: 'BR', label: 'Brasil (todos os estados)' },
-        ...estados.map(estado => ({
-            value: estado.uf,
-            label: `${estado.uf} (${estado.total_municipios})`,
-        })),
-    ];
+    const estadoOptions = estados.map(estado => ({
+        value: estado.uf,
+        label: `${estado.uf} (${estado.total_municipios})`,
+    }));
 
-    populateSelect(document.getElementById('ufSelect'), estadoOptions, 'Filtrar por UF (opcional)');
+    populateSelect(document.getElementById('ufSelect'), estadoOptions, 'Selecione a UF');
 
     await loadMunicipios();
 }
@@ -432,40 +364,17 @@ function exportarJSON() {
 }
 
 function handleMunicipioSearch(event) {
-    const rawValue = event.target.value;
-    const query = rawValue.trim();
-
-    selectMunicipioFromInputValue(rawValue);
-
+    const query = event.target.value.trim();
     clearTimeout(municipioSearchTimeout);
     municipioSearchTimeout = setTimeout(() => {
         loadMunicipios(query);
-    }, 200);
+    }, 300);
 }
 
 function handleUfChange() {
     const searchInput = document.getElementById('municipioSearch');
     const query = searchInput ? searchInput.value.trim() : '';
-    state.lastMunicipioQuery = null;
     loadMunicipios(query);
-}
-
-function selectMunicipioFromInputValue(value) {
-    const municipioSelect = document.getElementById('municipioSelect');
-    if (!municipioSelect) {
-        return;
-    }
-
-    const normalized = value.trim().toLowerCase();
-    if (normalized && state.municipioLookup.has(normalized)) {
-        municipioSelect.value = state.municipioLookup.get(normalized);
-    } else if (municipioSelect.value) {
-        municipioSelect.value = '';
-    }
-}
-
-function handleMunicipioSelectChange() {
-    syncMunicipioInputWithSelect();
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -480,5 +389,4 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('exportarBtn').addEventListener('click', exportarJSON);
     document.getElementById('ufSelect').addEventListener('change', handleUfChange);
     document.getElementById('municipioSearch').addEventListener('input', handleMunicipioSearch);
-    document.getElementById('municipioSelect').addEventListener('change', handleMunicipioSelectChange);
 });

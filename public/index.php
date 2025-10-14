@@ -11,8 +11,7 @@ require_once __DIR__ . '/../templates/header.php';
                 </div>
                 <div class="col-12 col-md-4">
                     <label for="municipioSearch" class="form-label">Buscar município</label>
-                    <input type="text" id="municipioSearch" class="form-control mb-2" placeholder="Digite para buscar" autocomplete="off" list="municipioSuggestions">
-                    <datalist id="municipioSuggestions"></datalist>
+                    <input type="text" id="municipioSearch" class="form-control mb-2" placeholder="Digite para buscar" autocomplete="off">
                     <label for="municipioSelect" class="form-label mt-2">Município / Consolidados</label>
                     <select id="municipioSelect" class="form-select" required></select>
                 </div>
