@@ -535,14 +535,19 @@ class SiconfiService
     private function sumByContaFromItems(array $items, array $contas): array
     {
         $resultado = [];
+        $contasBusca = [];
+
         foreach ($contas as $conta) {
             $resultado[$conta] = 0.0;
+            $contasBusca[strtolower($conta)] = $conta;
         }
 
         foreach ($items as $item) {
-            $descricao = $item['ds_conta'] ?? '';
-            if (isset($resultado[$descricao])) {
-                $resultado[$descricao] += $this->extractValorRealizado($item);
+            $descricao = strtolower($item['ds_conta'] ?? '');
+
+            if (isset($contasBusca[$descricao])) {
+                $chaveOriginal = $contasBusca[$descricao];
+                $resultado[$chaveOriginal] += $this->extractValorRealizado($item);
             }
         }
 
