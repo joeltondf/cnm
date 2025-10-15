@@ -568,11 +568,11 @@ class SiconfiService
             'Receitas Correntes',
             'Receitas de Capital',
         ]);
-        $despesas = $this->sumByContaFromItems($items, [
-            'Despesas com Pessoal e Encargos',
-            'Outras Despesas Correntes',
-            'Investimentos',
-        ]);
+        $despesas = [
+            'Despesas com Pessoal e Encargos' => $this->sumContaLikeFromItems($items, 'Pessoal e Encargos'),
+            'Outras Despesas Correntes' => $this->sumContaLikeFromItems($items, 'Outras Despesas Correntes'),
+            'Investimentos' => $this->sumContaLikeFromItems($items, 'Investimentos'),
+        ];
 
         $receitaTotal = array_sum($receitas);
         $despesaTotal = array_sum($despesas);
