@@ -9,6 +9,7 @@ const API_BASE_URL = 'https://apidatalake.tesouro.gov.br/ords/siconfi/tt/';
 const API_RREO_ENDPOINT = 'rreo';
 const API_PAGE_LIMIT = 1000; // Quantidade de registros por página em cada chamada
 const API_MAX_PAGES = 50; // Limite de páginas a serem percorridas por consulta
+const API_DEFAULT_PERIODICIDADE = 'B'; // Periodicidade padrão (B = bimestral)
 
 // Cabeçalhos padrão enviados para a API do SICONFI
 const API_HEADERS = [
