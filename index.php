@@ -24,9 +24,74 @@ $service = new SiconfiService();
 $errorMessage = null;
 $municipiosDisponiveis = $service->getMunicipiosDisponiveis();
 
+$municipio = 'Município não identificado';
+$kpis = [
+    'receita_total' => 0.0,
+    'despesa_total' => 0.0,
+    'resultado_orcamentario' => 0.0,
+    'receitas_composicao' => [],
+    'despesas_composicao' => [],
+];
+$receitas = [
+    'categorias' => [],
+    'impostos' => [],
+];
+$despesas = [
+    'pessoal' => 0.0,
+    'outras_correntes' => 0.0,
+    'investimentos' => 0.0,
+    'reserva' => 0.0,
+];
+$comparativo = [];
+$detalhes = [];
+
 try {
-    // Consulta/cached da API e persistência
-    $service->ensureData(
+    $municipio = $service->getMunicipioNome(
+        $params['id_ente'],
+        $params['an_exercicio'],
+        $params['nr_periodo'],
+        $params['co_tipo_demonstrativo'],
+        $params['no_anexo'],
+        $params['co_esfera']
+    ) ?? $municipio;
+
+    $kpis = array_merge($kpis, $service->getKpis(
+        $params['id_ente'],
+        $params['an_exercicio'],
+        $params['nr_periodo'],
+        $params['co_tipo_demonstrativo'],
+        $params['no_anexo'],
+        $params['co_esfera']
+    ));
+
+    $receitas = array_merge($receitas, $service->getReceitas(
+        $params['id_ente'],
+        $params['an_exercicio'],
+        $params['nr_periodo'],
+        $params['co_tipo_demonstrativo'],
+        $params['no_anexo'],
+        $params['co_esfera']
+    ));
+
+    $despesas = array_merge($despesas, $service->getDespesas(
+        $params['id_ente'],
+        $params['an_exercicio'],
+        $params['nr_periodo'],
+        $params['co_tipo_demonstrativo'],
+        $params['no_anexo'],
+        $params['co_esfera']
+    ));
+
+    $comparativo = $service->getComparativo(
+        $params['id_ente'],
+        $params['an_exercicio'],
+        $params['nr_periodo'],
+        $params['co_tipo_demonstrativo'],
+        $params['no_anexo'],
+        $params['co_esfera']
+    );
+
+    $detalhes = $service->getDetalhes(
         $params['id_ente'],
         $params['an_exercicio'],
         $params['nr_periodo'],
@@ -35,35 +100,8 @@ try {
         $params['co_esfera']
     );
 } catch (Throwable $e) {
-    $errorMessage = 'Não foi possível atualizar os dados do SICONFI: ' . $e->getMessage();
+    $errorMessage = 'Não foi possível carregar os dados do SICONFI: ' . $e->getMessage();
 }
-
-$municipio = $service->getMunicipioNome($params['id_ente']) ?? 'Município não identificado';
-$kpis = $service->getKpis($params['id_ente'], $params['an_exercicio'], $params['nr_periodo'], $params['co_tipo_demonstrativo']);
-$kpis = array_merge([
-    'receita_total' => 0.0,
-    'despesa_total' => 0.0,
-    'resultado_orcamentario' => 0.0,
-    'receitas_composicao' => [],
-    'despesas_composicao' => [],
-], $kpis);
-
-$receitas = $service->getReceitas($params['id_ente'], $params['an_exercicio'], $params['nr_periodo'], $params['co_tipo_demonstrativo']);
-$receitas = array_merge([
-    'categorias' => [],
-    'impostos' => [],
-], $receitas);
-
-$despesas = $service->getDespesas($params['id_ente'], $params['an_exercicio'], $params['nr_periodo'], $params['co_tipo_demonstrativo']);
-$despesas = array_merge([
-    'pessoal' => 0.0,
-    'outras_correntes' => 0.0,
-    'investimentos' => 0.0,
-    'reserva' => 0.0,
-], $despesas);
-
-$comparativo = $service->getComparativo($params['id_ente'], $params['an_exercicio'], $params['nr_periodo'], $params['co_tipo_demonstrativo']);
-$detalhes = $service->getDetalhes($params['id_ente'], $params['an_exercicio'], $params['nr_periodo'], $params['co_tipo_demonstrativo']);
 
 $dashboardData = [
     'municipio' => $municipio,
@@ -88,54 +126,70 @@ $dashboardData = [
         body { font-family: 'Inter', sans-serif; }
         .animate-spin { animation: spin 1s linear infinite; }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .tab-button {
+            transition: all 0.3s ease;
+        }
         .tab-button.active {
-            background: linear-gradient(to right, var(--tw-gradient-stops));
-            --tw-gradient-from: #3B82F6;
-            --tw-gradient-to: #8B5CF6;
-            color: white;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            background: linear-gradient(135deg, #4F46E5, #8B5CF6);
+            color: #fff;
+            box-shadow: 0 20px 45px -24px rgba(79, 70, 229, 0.6);
+        }
+        .tab-button:not(.active):hover {
+            background-color: rgba(79, 70, 229, 0.08);
+            color: #312e81;
         }
     </style>
 </head>
-<body class="bg-gradient-to-br from-gray-50 to-gray-100 min-h-screen">
-    <div class="max-w-7xl mx-auto px-4 py-10">
-        <header class="mb-10">
-            <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
-                <div>
-                    <p class="text-sm text-indigo-500 font-semibold uppercase tracking-wide">Relatório Resumido de Execução Orçamentária</p>
-                    <h1 class="text-4xl font-bold text-gray-900 mt-2">Painel Municipalista</h1>
-                    <p class="text-gray-500 mt-2">Dados oficiais do Tesouro Nacional / SICONFI atualizados automaticamente.</p>
-                    <p class="text-gray-700 mt-2 font-medium">
-                        <?php echo htmlspecialchars($municipio); ?> · Exercício <?php echo htmlspecialchars((string)$params['an_exercicio']); ?> · <?php echo htmlspecialchars($params['nr_periodo']); ?>º bimestre
-                    </p>
-                </div>
-                <form method="get" class="bg-white/80 backdrop-blur rounded-2xl shadow-lg border border-white/50 p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+<body class="bg-gradient-to-br from-indigo-50 via-white to-slate-100 min-h-screen">
+    <div class="mx-auto w-[95%] max-w-screen-2xl px-6 py-12">
+        <header class="mb-12">
+            <div class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_420px] bg-white/60 border border-white/80 backdrop-blur-xl rounded-3xl shadow-xl shadow-indigo-100 p-8">
+                <div class="flex flex-col gap-4">
+                    <span class="inline-flex items-center gap-2 self-start rounded-full bg-indigo-100/80 px-4 py-2 text-xs font-semibold uppercase tracking-[0.25em] text-indigo-700">Monitoramento em tempo real</span>
                     <div>
-                        <label class="text-sm font-semibold text-gray-600">Ano do Exercício</label>
-                        <select name="an_exercicio" class="mt-1 w-full rounded-xl border-gray-200 focus:border-indigo-400 focus:ring-indigo-300">
+                        <h1 class="text-4xl font-bold text-slate-900 leading-tight">Painel Municipalista</h1>
+                        <p class="mt-3 text-base text-slate-600">Dados oficiais do Tesouro Nacional / SICONFI consultados sob demanda, preservando o desempenho do banco de dados local.</p>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-3 text-sm text-slate-600">
+                        <span class="inline-flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 font-medium text-indigo-700">
+                            <span class="h-2 w-2 rounded-full bg-indigo-500"></span>
+                            <?php echo htmlspecialchars($municipio); ?>
+                        </span>
+                        <span class="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 font-medium">
+                            Exercício <?php echo htmlspecialchars((string)$params['an_exercicio']); ?>
+                        </span>
+                        <span class="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 font-medium">
+                            <?php echo htmlspecialchars($params['nr_periodo']); ?>º bimestre
+                        </span>
+                    </div>
+                </div>
+                <form method="get" class="bg-white/90 backdrop-blur-xl rounded-3xl shadow-lg shadow-indigo-100 border border-indigo-100/60 p-6 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                    <div>
+                        <label class="text-sm font-semibold text-slate-600">Ano do Exercício</label>
+                        <select name="an_exercicio" class="mt-2 w-full rounded-2xl border border-indigo-100 bg-white/80 px-3 py-2 text-sm text-slate-700 shadow-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-300/80">
                             <?php for ($ano = 2020; $ano <= (int)date('Y'); $ano++): ?>
                                 <option value="<?php echo $ano; ?>" <?php echo $ano === $params['an_exercicio'] ? 'selected' : ''; ?>><?php echo $ano; ?></option>
                             <?php endfor; ?>
                         </select>
                     </div>
                     <div>
-                        <label class="text-sm font-semibold text-gray-600">Bimestre</label>
-                        <select name="nr_periodo" class="mt-1 w-full rounded-xl border-gray-200 focus:border-indigo-400 focus:ring-indigo-300">
+                        <label class="text-sm font-semibold text-slate-600">Bimestre</label>
+                        <select name="nr_periodo" class="mt-2 w-full rounded-2xl border border-indigo-100 bg-white/80 px-3 py-2 text-sm text-slate-700 shadow-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-300/80">
                             <?php for ($bimestre = 1; $bimestre <= 6; $bimestre++): ?>
                                 <option value="<?php echo $bimestre; ?>" <?php echo $bimestre === $params['nr_periodo'] ? 'selected' : ''; ?>><?php echo $bimestre; ?>º</option>
                             <?php endfor; ?>
                         </select>
                     </div>
                     <div>
-                        <label class="text-sm font-semibold text-gray-600">Tipo do Demonstrativo</label>
-                        <select name="co_tipo_demonstrativo" class="mt-1 w-full rounded-xl border-gray-200 focus:border-indigo-400 focus:ring-indigo-300">
+                        <label class="text-sm font-semibold text-slate-600">Tipo do Demonstrativo</label>
+                        <select name="co_tipo_demonstrativo" class="mt-2 w-full rounded-2xl border border-indigo-100 bg-white/80 px-3 py-2 text-sm text-slate-700 shadow-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-300/80">
                             <option value="RREO" <?php echo $params['co_tipo_demonstrativo'] === 'RREO' ? 'selected' : ''; ?>>RREO Completo</option>
                             <option value="RREO Simplificado" <?php echo $params['co_tipo_demonstrativo'] === 'RREO Simplificado' ? 'selected' : ''; ?>>RREO Simplificado</option>
                         </select>
                     </div>
                     <div class="sm:col-span-2">
-                        <label class="text-sm font-semibold text-gray-600">Município (IBGE)</label>
-                        <select name="id_ente" class="mt-1 w-full rounded-xl border-gray-200 focus:border-indigo-400 focus:ring-indigo-300" required>
+                        <label class="text-sm font-semibold text-slate-600">Município (IBGE)</label>
+                        <select name="id_ente" class="mt-2 w-full rounded-2xl border border-indigo-100 bg-white/80 px-3 py-2 text-sm text-slate-700 shadow-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-300/80" required>
                             <option value="">Selecione um município</option>
                             <?php foreach ($municipiosDisponiveis as $municipioOption): ?>
                                 <?php $selected = $municipioOption['id_ibge'] == $params['id_ente'] ? 'selected' : ''; ?>
@@ -149,53 +203,56 @@ $dashboardData = [
                         <?php endif; ?>
                     </div>
                     <div>
-                        <label class="text-sm font-semibold text-gray-600">Esfera</label>
-                        <select name="co_esfera" class="mt-1 w-full rounded-xl border-gray-200 focus:border-indigo-400 focus:ring-indigo-300">
+                        <label class="text-sm font-semibold text-slate-600">Esfera</label>
+                        <select name="co_esfera" class="mt-2 w-full rounded-2xl border border-indigo-100 bg-white/80 px-3 py-2 text-sm text-slate-700 shadow-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-300/80">
                             <option value="">Todas</option>
                             <option value="M" <?php echo $params['co_esfera'] === 'M' ? 'selected' : ''; ?>>Municípios</option>
                             <option value="E" <?php echo $params['co_esfera'] === 'E' ? 'selected' : ''; ?>>Estados/DF</option>
                         </select>
                     </div>
                     <div>
-                        <label class="text-sm font-semibold text-gray-600">Anexo (opcional)</label>
-                        <input type="text" name="no_anexo" value="<?php echo htmlspecialchars((string)$params['no_anexo']); ?>" class="mt-1 w-full rounded-xl border-gray-200 focus:border-indigo-400 focus:ring-indigo-300" placeholder="Nome do anexo">
+                        <label class="text-sm font-semibold text-slate-600">Anexo (opcional)</label>
+                        <input type="text" name="no_anexo" value="<?php echo htmlspecialchars((string)$params['no_anexo']); ?>" class="mt-2 w-full rounded-2xl border border-indigo-100 bg-white/80 px-3 py-2 text-sm text-slate-700 shadow-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-300/80" placeholder="Nome do anexo">
                     </div>
-                    <div class="sm:col-span-2 lg:col-span-3 flex justify-end items-end">
-                        <button type="submit" class="inline-flex items-center px-6 py-3 rounded-xl font-semibold bg-gradient-to-r from-indigo-500 to-purple-500 text-white shadow-lg shadow-indigo-500/30 hover:opacity-90 transition">
-                            Atualizar Dados
+                    <div class="sm:col-span-2 xl:col-span-3 flex justify-end items-end">
+                        <button type="submit" class="inline-flex items-center gap-2 px-6 py-3 rounded-2xl font-semibold bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500 text-white shadow-lg shadow-fuchsia-200/60 transition-transform hover:-translate-y-0.5 hover:shadow-xl">
+                            <span class="inline-flex h-5 w-5 items-center justify-center rounded-full bg-white/20">
+                                <span class="h-2 w-2 rounded-full bg-white"></span>
+                            </span>
+                            Visualizar dados
                         </button>
                     </div>
                 </form>
             </div>
             <?php if ($errorMessage): ?>
-                <div class="mt-6 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl">
+                <div class="mt-6 rounded-2xl border border-red-200/80 bg-red-50/90 px-5 py-4 text-red-700 shadow-inner">
                     <?php echo htmlspecialchars($errorMessage); ?>
                 </div>
             <?php endif; ?>
         </header>
 
-        <nav class="flex flex-wrap gap-4 mb-8">
-            <button data-tab="dashboard" class="tab-button active px-6 py-3 rounded-2xl bg-white text-gray-600 font-semibold shadow-sm">Dashboard</button>
-            <button data-tab="receitas" class="tab-button px-6 py-3 rounded-2xl bg-white text-gray-600 font-semibold shadow-sm">Receitas</button>
-            <button data-tab="despesas" class="tab-button px-6 py-3 rounded-2xl bg-white text-gray-600 font-semibold shadow-sm">Despesas</button>
-            <button data-tab="comparativo" class="tab-button px-6 py-3 rounded-2xl bg-white text-gray-600 font-semibold shadow-sm">Comparativo</button>
-            <button data-tab="detalhes" class="tab-button px-6 py-3 rounded-2xl bg-white text-gray-600 font-semibold shadow-sm">Detalhes</button>
-            <button data-tab="logs" class="tab-button px-6 py-3 rounded-2xl bg-white text-gray-600 font-semibold shadow-sm">Logs</button>
+        <nav class="mb-10 flex flex-wrap items-center gap-3 rounded-full border border-white/70 bg-white/60 p-2 shadow-sm shadow-indigo-100/40 backdrop-blur">
+            <button data-tab="dashboard" class="tab-button active px-6 py-3 rounded-full bg-white/70 text-sm font-semibold text-slate-600 shadow-sm">Dashboard</button>
+            <button data-tab="receitas" class="tab-button px-6 py-3 rounded-full bg-white/70 text-sm font-semibold text-slate-600 shadow-sm">Receitas</button>
+            <button data-tab="despesas" class="tab-button px-6 py-3 rounded-full bg-white/70 text-sm font-semibold text-slate-600 shadow-sm">Despesas</button>
+            <button data-tab="comparativo" class="tab-button px-6 py-3 rounded-full bg-white/70 text-sm font-semibold text-slate-600 shadow-sm">Comparativo</button>
+            <button data-tab="detalhes" class="tab-button px-6 py-3 rounded-full bg-white/70 text-sm font-semibold text-slate-600 shadow-sm">Detalhes</button>
+            <button data-tab="logs" class="tab-button px-6 py-3 rounded-full bg-white/70 text-sm font-semibold text-slate-600 shadow-sm">Logs</button>
         </nav>
 
         <section id="tab-dashboard" class="tab-content grid gap-6">
             <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div class="bg-white rounded-3xl p-6 shadow-lg border border-white/60">
+                <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1">
                     <p class="text-sm text-gray-500">Receita Total</p>
                     <p class="text-3xl font-bold text-indigo-600" id="kpi-receita-total">-</p>
                     <p class="text-xs text-gray-400 mt-2">Soma das receitas correntes e de capital.</p>
                 </div>
-                <div class="bg-white rounded-3xl p-6 shadow-lg border border-white/60">
+                <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1">
                     <p class="text-sm text-gray-500">Despesa Total</p>
                     <p class="text-3xl font-bold text-purple-600" id="kpi-despesa-total">-</p>
                     <p class="text-xs text-gray-400 mt-2">Inclui despesas com pessoal, correntes e investimentos.</p>
                 </div>
-                <div class="bg-white rounded-3xl p-6 shadow-lg border border-white/60">
+                <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1">
                     <p class="text-sm text-gray-500">Resultado Orçamentário</p>
                     <p class="text-3xl font-bold" id="kpi-resultado">-</p>
                     <p class="text-xs text-gray-400 mt-2">Diferença entre receitas totais e despesas totais.</p>
@@ -203,14 +260,14 @@ $dashboardData = [
             </div>
 
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div class="bg-white rounded-3xl p-6 shadow-lg border border-white/60">
+                <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1">
                     <div class="flex justify-between items-center mb-4">
                         <h2 class="text-lg font-semibold text-gray-800">Composição das Receitas</h2>
                         <span class="text-sm text-gray-400">Valores realizados</span>
                     </div>
                     <canvas id="chart-receitas"></canvas>
                 </div>
-                <div class="bg-white rounded-3xl p-6 shadow-lg border border-white/60">
+                <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1">
                     <div class="flex justify-between items-center mb-4">
                         <h2 class="text-lg font-semibold text-gray-800">Principais Despesas</h2>
                         <span class="text-sm text-gray-400">Valores realizados</span>
@@ -222,24 +279,24 @@ $dashboardData = [
 
         <section id="tab-receitas" class="tab-content hidden">
             <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-                <div class="bg-white rounded-3xl p-6 shadow-lg border border-white/60">
+                <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1">
                     <p class="text-sm text-gray-500">Receitas Correntes</p>
                     <p class="text-2xl font-bold text-indigo-600" id="receita-corrente">-</p>
                 </div>
-                <div class="bg-white rounded-3xl p-6 shadow-lg border border-white/60">
+                <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1">
                     <p class="text-sm text-gray-500">Receitas de Capital</p>
                     <p class="text-2xl font-bold text-purple-600" id="receita-capital">-</p>
                 </div>
-                <div class="bg-white rounded-3xl p-6 shadow-lg border border-white/60">
+                <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1">
                     <p class="text-sm text-gray-500">Transferências</p>
                     <p class="text-2xl font-bold text-sky-600" id="receita-transferencias">-</p>
                 </div>
             </div>
-            <div class="bg-white rounded-3xl p-6 shadow-lg border border-white/60 mb-6">
+            <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1 mb-6">
                 <h2 class="text-lg font-semibold text-gray-800 mb-4">Principais Impostos</h2>
                 <ul id="lista-impostos" class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-gray-600"></ul>
             </div>
-            <div class="bg-white rounded-3xl p-6 shadow-lg border border-white/60">
+            <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1">
                 <h2 class="text-lg font-semibold text-gray-800 mb-4">Distribuição das Receitas Próprias</h2>
                 <canvas id="chart-impostos"></canvas>
             </div>
@@ -247,24 +304,24 @@ $dashboardData = [
 
         <section id="tab-despesas" class="tab-content hidden">
             <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
-                <div class="bg-white rounded-3xl p-6 shadow-lg border border-white/60">
+                <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1">
                     <p class="text-sm text-gray-500">Pessoal e Encargos</p>
                     <p class="text-xl font-bold text-indigo-600" id="despesa-pessoal">-</p>
                 </div>
-                <div class="bg-white rounded-3xl p-6 shadow-lg border border-white/60">
+                <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1">
                     <p class="text-sm text-gray-500">Outras Correntes</p>
                     <p class="text-xl font-bold text-purple-600" id="despesa-outras">-</p>
                 </div>
-                <div class="bg-white rounded-3xl p-6 shadow-lg border border-white/60">
+                <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1">
                     <p class="text-sm text-gray-500">Investimentos</p>
                     <p class="text-xl font-bold text-sky-600" id="despesa-investimentos">-</p>
                 </div>
-                <div class="bg-white rounded-3xl p-6 shadow-lg border border-white/60">
+                <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1">
                     <p class="text-sm text-gray-500">Reserva</p>
                     <p class="text-xl font-bold text-emerald-600" id="despesa-reserva">-</p>
                 </div>
             </div>
-            <div class="bg-white rounded-3xl p-6 shadow-lg border border-white/60">
+            <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1">
                 <h2 class="text-lg font-semibold text-gray-800 mb-4">Composição da Despesa</h2>
                 <canvas id="chart-despesa-rosca"></canvas>
             </div>
@@ -272,27 +329,27 @@ $dashboardData = [
 
         <section id="tab-comparativo" class="tab-content hidden">
             <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-                <div class="bg-white rounded-3xl p-6 shadow-lg border border-white/60">
+                <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1">
                     <p class="text-sm text-gray-500">Receita Total</p>
                     <p class="text-xl font-bold text-indigo-600" id="comparativo-receita">-</p>
                     <p class="text-xs text-gray-500" id="comparativo-receita-var">-</p>
                 </div>
-                <div class="bg-white rounded-3xl p-6 shadow-lg border border-white/60">
+                <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1">
                     <p class="text-sm text-gray-500">Despesa Total</p>
                     <p class="text-xl font-bold text-purple-600" id="comparativo-despesa">-</p>
                     <p class="text-xs text-gray-500" id="comparativo-despesa-var">-</p>
                 </div>
-                <div class="bg-white rounded-3xl p-6 shadow-lg border border-white/60">
+                <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1">
                     <p class="text-sm text-gray-500">Resultado</p>
                     <p class="text-xl font-bold" id="comparativo-resultado">-</p>
                     <p class="text-xs text-gray-500" id="comparativo-resultado-var">-</p>
                 </div>
             </div>
-            <div class="bg-white rounded-3xl p-6 shadow-lg border border-white/60 mb-6">
+            <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1 mb-6">
                 <h2 class="text-lg font-semibold text-gray-800 mb-4">Comparativo Anual</h2>
                 <canvas id="chart-comparativo"></canvas>
             </div>
-            <div class="bg-white rounded-3xl p-6 shadow-lg border border-white/60">
+            <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1">
                 <h2 class="text-lg font-semibold text-gray-800 mb-4">Variação Percentual</h2>
                 <table class="w-full text-left text-sm text-gray-600">
                     <thead>
@@ -309,7 +366,7 @@ $dashboardData = [
         </section>
 
         <section id="tab-detalhes" class="tab-content hidden">
-            <div class="bg-white rounded-3xl p-6 shadow-lg border border-white/60">
+            <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1">
                 <h2 class="text-lg font-semibold text-gray-800 mb-4">Detalhamento por Conta</h2>
                 <div class="overflow-x-auto">
                     <table class="min-w-full divide-y divide-gray-200 text-sm text-gray-600">
@@ -329,7 +386,7 @@ $dashboardData = [
         </section>
 
         <section id="tab-logs" class="tab-content hidden">
-            <div class="bg-white rounded-3xl p-6 shadow-lg border border-white/60">
+            <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1">
                 <div class="flex items-center justify-between mb-4">
                     <div>
                         <h2 class="text-lg font-semibold text-gray-800">Logs da API</h2>
