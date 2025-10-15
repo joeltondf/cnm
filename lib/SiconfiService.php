@@ -594,12 +594,15 @@ class SiconfiService
 
     private function extractValorRealizado(array $item): float
     {
-        if (isset($item['vl_realizado']) && $item['vl_realizado'] !== null) {
-            return (float)$item['vl_realizado'];
+        // Para relatórios acumulados como o RREO, o valor "Até o Período" é o principal.
+        // Usamos !empty para garantir que valores como 0, 0.0 ou '' sejam ignorados.
+        if (!empty($item['vl_ate_periodo'])) {
+            return (float)$item['vl_ate_periodo'];
         }
 
-        if (isset($item['vl_ate_periodo']) && $item['vl_ate_periodo'] !== null) {
-            return (float)$item['vl_ate_periodo'];
+        // Usamos 'vl_realizado' (valor do bimestre) apenas como um fallback.
+        if (!empty($item['vl_realizado'])) {
+            return (float)$item['vl_realizado'];
         }
 
         return 0.0;
