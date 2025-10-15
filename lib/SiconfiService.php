@@ -316,14 +316,23 @@ class SiconfiService
     private function extractItemsFromResponse(array $response): array
     {
         if (isset($response['items']) && is_array($response['items'])) {
-            return $response['items'];
+            return array_map([$this, 'normalizeItemKeys'], $response['items']);
         }
 
         if ($this->isSequentialArray($response)) {
-            return $response;
+            return array_map([$this, 'normalizeItemKeys'], $response);
         }
 
         return [];
+    }
+
+    private function normalizeItemKeys($item): array
+    {
+        if (!is_array($item)) {
+            return [];
+        }
+
+        return array_change_key_case($item, CASE_LOWER);
     }
 
     private function extractNextLink(array $response): ?string
