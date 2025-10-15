@@ -133,7 +133,7 @@ class SiconfiService
 
     private function normalizeFinancialFields(array $item): array
     {
-        $camposNumericos = ['vl_previsto', 'vl_atualizado', 'vl_realizado', 'vl_ate_periodo'];
+        $camposNumericos = ['vl_previsto', 'vl_atualizado', 'vl_realizado', 'vl_ate_periodo', 'valor'];
 
         foreach ($camposNumericos as $campo) {
             if (array_key_exists($campo, $item)) {
@@ -342,7 +342,21 @@ class SiconfiService
             return [];
         }
 
-        return array_change_key_case($item, CASE_LOWER);
+        $item = array_change_key_case($item, CASE_LOWER);
+
+        if (isset($item['cod_conta']) && !isset($item['cd_conta'])) {
+            $item['cd_conta'] = $item['cod_conta'];
+        }
+
+        if (isset($item['conta']) && !isset($item['ds_conta'])) {
+            $item['ds_conta'] = $item['conta'];
+        }
+
+        if (isset($item['valor'])) {
+            $item['valor'] = $this->toDecimal($item['valor']);
+        }
+
+        return $item;
     }
 
     private function extractNextLink(array $response): ?string
@@ -432,6 +446,29 @@ class SiconfiService
         return $stmt->fetchAll();
     }
 
+    public function getAnexosDisponiveis(): array
+    {
+        return [
+            'RREO-Anexo 01' => 'Anexo 01 - Balanço Orçamentário',
+            'RREO-Anexo 02' => 'Anexo 02 - Demonstrativo da Execução das Despesas por Função/Subfunção',
+            'RREO-Anexo 03' => 'Anexo 03 - Demonstrativo da Receita Corrente Líquida',
+            'RREO-Anexo 04' => 'Anexo 04 - Demonstrativo das Receitas e Despesas Previdenciárias do RPPS',
+            'RREO-Anexo 05' => 'Anexo 05 - Demonstrativo das Despesas com Manutenção e Desenvolvimento do Ensino',
+            'RREO-Anexo 06' => 'Anexo 06 - Demonstrativo do Resultado Primário e Nominal',
+            'RREO-Anexo 07' => 'Anexo 07 - Demonstrativo dos Restos a Pagar por Poder e Órgão',
+        ];
+    }
+
+    public function getAnexoLabel(?string $anexo): ?string
+    {
+        if ($anexo === null || $anexo === '') {
+            return null;
+        }
+
+        $anexos = $this->getAnexosDisponiveis();
+        return $anexos[$anexo] ?? $anexo;
+    }
+
     public function getKpis(string $idEnte, int $ano, int $periodo, string $tipo, ?string $anexo = null, ?string $esfera = null): array
     {
         $items = $this->getDataFromApi($idEnte, $ano, $periodo, $tipo, $anexo, $esfera);
@@ -459,6 +496,7 @@ class SiconfiService
         return [
             'categorias' => $categorias,
             'impostos' => $impostos,
+            'por_coluna' => $this->summarizeByColumn($items, 'receita'),
         ];
     }
 
@@ -471,6 +509,7 @@ class SiconfiService
             'outras_correntes' => $this->sumContaLikeFromItems($items, 'Outras Despesas Correntes'),
             'investimentos' => $this->sumContaLikeFromItems($items, 'Investimentos'),
             'reserva' => $this->sumContaLikeFromItems($items, 'Reserva de Contingência'),
+            'por_coluna' => $this->summarizeByColumn($items, 'despesa'),
         ];
     }
 
@@ -517,33 +556,88 @@ class SiconfiService
     {
         $items = $this->getDataFromApi($idEnte, $ano, $periodo, $tipo, $anexo, $esfera);
 
-        usort($items, function (array $a, array $b) {
-            return strcmp((string)($a['cd_conta'] ?? ''), (string)($b['cd_conta'] ?? ''));
+        $colunas = [];
+        $agrupados = [];
+
+        foreach ($items as $item) {
+            $codigo = (string)($item['cd_conta'] ?? $item['cod_conta'] ?? '');
+            $descricao = (string)($item['ds_conta'] ?? $item['conta'] ?? '');
+            $coluna = trim((string)($item['coluna'] ?? 'Valor'));
+            if ($coluna === '') {
+                $coluna = 'Valor';
+            }
+
+            $colunas[$coluna] = true;
+            $chave = $codigo . '|' . $descricao;
+
+            if (!isset($agrupados[$chave])) {
+                $agrupados[$chave] = [
+                    'codigo' => $codigo,
+                    'descricao' => $descricao,
+                    'valores' => [],
+                ];
+            }
+
+            $valor = $this->getValorFromItem($item);
+            $prioridade = $this->getColumnPriority($coluna);
+
+            if (!isset($agrupados[$chave]['valores'][$coluna])) {
+                $agrupados[$chave]['valores'][$coluna] = [
+                    'valor' => $valor,
+                    'prioridade' => $prioridade,
+                ];
+                continue;
+            }
+
+            $existente = $agrupados[$chave]['valores'][$coluna];
+            if ($prioridade > $existente['prioridade']) {
+                $agrupados[$chave]['valores'][$coluna] = [
+                    'valor' => $valor,
+                    'prioridade' => $prioridade,
+                ];
+            } elseif ($prioridade === $existente['prioridade']) {
+                $agrupados[$chave]['valores'][$coluna]['valor'] += $valor;
+            }
+        }
+
+        $colunasOrdenadas = array_keys($this->sortColumnsByPriority(array_fill_keys(array_keys($colunas), 0.0)));
+
+        $linhas = array_values(array_map(function (array $linha) {
+            $linha['valores'] = array_map(static fn(array $entry) => $entry['valor'], $linha['valores']);
+            return $linha;
+        }, $agrupados));
+
+        usort($linhas, function (array $a, array $b): int {
+            $codigoA = (string)($a['codigo'] ?? '');
+            $codigoB = (string)($b['codigo'] ?? '');
+            $comparacao = strcmp($codigoA, $codigoB);
+            if ($comparacao !== 0) {
+                return $comparacao;
+            }
+
+            return strcmp((string)($a['descricao'] ?? ''), (string)($b['descricao'] ?? ''));
         });
 
-        return array_map(function (array $item) {
-            return [
-                'cd_conta' => $item['cd_conta'] ?? null,
-                'ds_conta' => $item['ds_conta'] ?? null,
-                'vl_previsto' => $item['vl_previsto'] ?? 0.0,
-                'vl_atualizado' => $item['vl_atualizado'] ?? 0.0,
-                'vl_realizado' => $item['vl_realizado'] ?? ($item['vl_ate_periodo'] ?? 0.0),
-            ];
-        }, $items);
+        return [
+            'colunas' => $colunasOrdenadas,
+            'linhas' => $linhas,
+        ];
     }
 
     private function sumByContaFromItems(array $items, array $contas): array
     {
         $resultado = [];
         $contasBusca = [];
+        $acumulados = [];
 
         foreach ($contas as $conta) {
             $resultado[$conta] = 0.0;
             $contasBusca[$conta] = $this->normalizeDescricao($conta);
+            $acumulados[$conta] = [];
         }
 
         foreach ($items as $item) {
-            $descricao = $this->normalizeDescricao($item['ds_conta'] ?? null);
+            $descricao = $this->normalizeDescricao($item['ds_conta'] ?? $item['conta'] ?? null);
             if ($descricao === '') {
                 continue;
             }
@@ -554,10 +648,17 @@ class SiconfiService
                 }
 
                 if ($descricao === $contaNormalizada || str_contains($descricao, $contaNormalizada)) {
-                    $resultado[$contaOriginal] += $this->extractValorRealizado($item);
+                    $chave = (string)($item['cd_conta'] ?? $item['conta'] ?? md5($descricao));
+                    $valor = $this->getValorFromItem($item);
+                    $prioridade = $this->getColumnPriority($item['coluna'] ?? null);
+                    $this->addValueWithPriority($acumulados[$contaOriginal], $chave, $valor, $prioridade);
                     break;
                 }
             }
+        }
+
+        foreach ($resultado as $contaOriginal => $_) {
+            $resultado[$contaOriginal] = array_sum(array_map(static fn(array $entry) => $entry['valor'], $acumulados[$contaOriginal]));
         }
 
         return $resultado;
@@ -565,21 +666,63 @@ class SiconfiService
 
     private function sumContaLikeFromItems(array $items, string $pattern): float
     {
-        $total = 0.0;
         $patternNormalizado = $this->normalizeDescricao($pattern);
 
         if ($patternNormalizado === '') {
             return 0.0;
         }
 
+        $acumulado = [];
+
         foreach ($items as $item) {
-            $descricao = $this->normalizeDescricao($item['ds_conta'] ?? null);
+            $descricao = $this->normalizeDescricao($item['ds_conta'] ?? $item['conta'] ?? null);
             if ($descricao !== '' && str_contains($descricao, $patternNormalizado)) {
-                $total += $this->extractValorRealizado($item);
+                $chave = (string)($item['cd_conta'] ?? $item['conta'] ?? md5($descricao));
+                $valor = $this->getValorFromItem($item);
+                $prioridade = $this->getColumnPriority($item['coluna'] ?? null);
+                $this->addValueWithPriority($acumulado, $chave, $valor, $prioridade);
             }
         }
 
-        return $total;
+        return array_sum(array_map(static fn(array $entry) => $entry['valor'], $acumulado));
+    }
+
+    private function summarizeByColumn(array $items, string $tipo): array
+    {
+        $totais = [];
+
+        foreach ($items as $item) {
+            $descricaoNormalizada = $this->normalizeDescricao($item['ds_conta'] ?? $item['conta'] ?? null);
+            if ($descricaoNormalizada === '') {
+                continue;
+            }
+
+            if ($tipo === 'receita' && !str_contains($descricaoNormalizada, 'receita')) {
+                continue;
+            }
+
+            if ($tipo === 'despesa' && !str_contains($descricaoNormalizada, 'despesa')) {
+                continue;
+            }
+
+            $coluna = trim((string)($item['coluna'] ?? 'Valor'));
+            if ($coluna === '') {
+                $coluna = 'Valor';
+            }
+
+            $valor = $this->getValorFromItem($item);
+            if (!isset($totais[$coluna])) {
+                $totais[$coluna] = 0.0;
+            }
+
+            $totais[$coluna] += $valor;
+        }
+
+        if ($totais === []) {
+            return [];
+        }
+
+        return $this->sortColumnsByPriority($totais);
     }
 
     private function calculateKpisFromItems(array $items): array
@@ -607,17 +750,83 @@ class SiconfiService
         ];
     }
 
-    private function extractValorRealizado(array $item): float
+    private function sortColumnsByPriority(array $totais): array
     {
-        // Para relatórios acumulados como o RREO, o valor "Até o Período" é o principal.
-        // Usamos isset() para garantir que valores numéricos, incluindo 0, sejam considerados.
-        if (isset($item['vl_ate_periodo']) && $item['vl_ate_periodo'] !== '') {
-            return (float)$item['vl_ate_periodo'];
+        uksort($totais, function (string $a, string $b): int {
+            $prioridadeA = $this->getColumnPriority($a);
+            $prioridadeB = $this->getColumnPriority($b);
+
+            if ($prioridadeA === $prioridadeB) {
+                return strcasecmp($a, $b);
+            }
+
+            return $prioridadeB <=> $prioridadeA;
+        });
+
+        return $totais;
+    }
+
+    private function getColumnPriority(?string $coluna): int
+    {
+        if ($coluna === null) {
+            return 0;
         }
 
-        // Usamos 'vl_realizado' (valor do bimestre) apenas como um fallback.
-        if (isset($item['vl_realizado']) && $item['vl_realizado'] !== '') {
-            return (float)$item['vl_realizado'];
+        $colunaNormalizada = strtoupper(trim($coluna));
+
+        $prioridades = [
+            4 => ['REALIZ', 'EXECUT', 'LIQUID', 'ARREC', 'PAGO', 'EMPENH'],
+            3 => ['ATUALIZ', 'ATUAL'],
+            2 => ['PREVISÃO', 'PREVISAO', 'PREVIST', 'PREV'],
+            1 => ['VALOR'],
+        ];
+
+        foreach ($prioridades as $valorPrioridade => $tokens) {
+            foreach ($tokens as $token) {
+                if ($token !== '' && str_contains($colunaNormalizada, $token)) {
+                    return $valorPrioridade;
+                }
+            }
+        }
+
+        return 0;
+    }
+
+    private function addValueWithPriority(array &$storage, string $key, float $valor, int $prioridade): void
+    {
+        if (!isset($storage[$key])) {
+            $storage[$key] = [
+                'prioridade' => $prioridade,
+                'valor' => $valor,
+            ];
+
+            return;
+        }
+
+        if ($prioridade > $storage[$key]['prioridade']) {
+            $storage[$key] = [
+                'prioridade' => $prioridade,
+                'valor' => $valor,
+            ];
+
+            return;
+        }
+
+        if ($prioridade === $storage[$key]['prioridade']) {
+            $storage[$key]['valor'] += $valor;
+        }
+    }
+
+    private function getValorFromItem(array $item): float
+    {
+        if (isset($item['valor']) && $item['valor'] !== '') {
+            return (float)$item['valor'];
+        }
+
+        foreach (['vl_ate_periodo', 'vl_realizado', 'vl_atualizado', 'vl_previsto'] as $campo) {
+            if (isset($item[$campo]) && $item[$campo] !== '') {
+                return (float)$item[$campo];
+            }
         }
 
         return 0.0;
