@@ -73,6 +73,7 @@ $dashboardData = [
     'despesas' => $despesas,
     'comparativo' => $comparativo,
     'detalhes' => $detalhes,
+    'debug_log' => $service->getDebugLog(),
 ];
 ?>
 <!DOCTYPE html>
@@ -179,6 +180,7 @@ $dashboardData = [
             <button data-tab="despesas" class="tab-button px-6 py-3 rounded-2xl bg-white text-gray-600 font-semibold shadow-sm">Despesas</button>
             <button data-tab="comparativo" class="tab-button px-6 py-3 rounded-2xl bg-white text-gray-600 font-semibold shadow-sm">Comparativo</button>
             <button data-tab="detalhes" class="tab-button px-6 py-3 rounded-2xl bg-white text-gray-600 font-semibold shadow-sm">Detalhes</button>
+            <button data-tab="logs" class="tab-button px-6 py-3 rounded-2xl bg-white text-gray-600 font-semibold shadow-sm">Logs</button>
         </nav>
 
         <section id="tab-dashboard" class="tab-content grid gap-6">
@@ -322,6 +324,39 @@ $dashboardData = [
                         </thead>
                         <tbody id="detalhes-tabela" class="divide-y divide-gray-100"></tbody>
                     </table>
+                </div>
+            </div>
+        </section>
+
+        <section id="tab-logs" class="tab-content hidden">
+            <div class="bg-white rounded-3xl p-6 shadow-lg border border-white/60">
+                <div class="flex items-center justify-between mb-4">
+                    <div>
+                        <h2 class="text-lg font-semibold text-gray-800">Logs da API</h2>
+                        <p class="text-sm text-gray-500">Acompanhe cada etapa da consulta para entender o que aconteceu com o carregamento.</p>
+                    </div>
+                    <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700">
+                        <?php echo count($dashboardData['debug_log'] ?? []); ?> eventos
+                    </span>
+                </div>
+                <div class="space-y-4">
+                    <?php if (!empty($dashboardData['debug_log'])): ?>
+                        <?php foreach ($dashboardData['debug_log'] as $logEntry): ?>
+                            <div class="border border-gray-200 rounded-2xl p-4 bg-gray-50">
+                                <p class="text-xs uppercase tracking-wide text-gray-500 font-semibold">
+                                    <?php echo htmlspecialchars($logEntry['timestamp'] ?? ''); ?>
+                                </p>
+                                <p class="text-sm text-gray-800 font-medium mt-1">
+                                    <?php echo htmlspecialchars($logEntry['message'] ?? ''); ?>
+                                </p>
+                                <?php if (!empty($logEntry['context'])): ?>
+                                    <pre class="mt-3 text-xs text-gray-600 bg-white border border-gray-200 rounded-xl p-3 overflow-x-auto"><?php echo htmlspecialchars(json_encode($logEntry['context'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)); ?></pre>
+                                <?php endif; ?>
+                            </div>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <p class="text-sm text-gray-500">Nenhuma informação de log disponível. Tente atualizar os dados para registrar novas entradas.</p>
+                    <?php endif; ?>
                 </div>
             </div>
         </section>
