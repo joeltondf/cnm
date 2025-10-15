@@ -7,21 +7,30 @@ require_once __DIR__ . '/Database.php';
  */
 class SiconfiService
 {
-    private PDO $pdo;
+    private ?PDO $pdo = null;
     private static int $lastRequestTimestamp = 0;
     private array $debugLog = [];
+    private array $dataCache = [];
+    private array $metadataCache = [];
 
     public function __construct()
     {
-        $this->pdo = Database::getConnection();
+        try {
+            $this->pdo = Database::getConnection();
+        } catch (Throwable $e) {
+            $this->pdo = null;
+            $this->addLog('Falha ao conectar ao banco de dados local.', [
+                'erro' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**
-     * Garante que os dados estejam atualizados no banco considerando o cache.
+     * Mantido por compatibilidade: força o pré-carregamento dos dados em memória.
      */
     public function ensureData(string $idEnte, int $ano, int $periodo, string $tipo, ?string $anexo = null, ?string $esfera = null): void
     {
-        $this->addLog('Iniciando sincronização com parâmetros informados.', [
+        $this->addLog('Pré-carregando dados diretamente da API (sem persistência local).', [
             'id_ente' => $idEnte,
             'ano' => $ano,
             'periodo' => $periodo,
@@ -30,46 +39,7 @@ class SiconfiService
             'esfera' => $esfera,
         ]);
 
-        $cacheKey = $this->buildCacheKey($idEnte, $ano, $periodo, $tipo, $anexo, $esfera);
-        $stmt = $this->pdo->prepare('SELECT fetched_at FROM api_cache WHERE cache_key = :cache_key');
-        $stmt->execute([':cache_key' => $cacheKey]);
-        $row = $stmt->fetch();
-
-        $shouldFetch = true;
-        if ($row) {
-            $fetchedAt = new DateTime($row['fetched_at']);
-            $now = new DateTime();
-            $diff = $fetchedAt->diff($now);
-            $diffHours = ($diff->days * 24) + $diff->h + ($diff->i / 60);
-            if ($diffHours < CACHE_TTL_HOURS) {
-                $shouldFetch = false;
-                $this->addLog('Utilizando dados em cache.', [
-                    'ultima_atualizacao' => $fetchedAt->format('Y-m-d H:i:s'),
-                    'horas_desde_cache' => round($diffHours, 2),
-                ]);
-            }
-        }
-
-        if ($shouldFetch) {
-            $this->addLog('Cache expirado ou inexistente. Buscando dados diretamente na API.');
-            $data = $this->callSiconfiRREO($idEnte, $ano, $periodo, $tipo, $anexo, $esfera);
-            if ($data === null) {
-                $this->addLog('Nenhum dado retornado pela API. Verifique as mensagens anteriores.');
-                return;
-            }
-
-            if (empty($data)) {
-                $this->addLog('API respondeu com zero registros. Dados locais foram preservados para evitar perda de histórico.');
-                return;
-            }
-
-            $this->addLog('Dados obtidos da API SICONFI.', [
-                'quantidade_registros' => count($data),
-            ]);
-            $this->updateDatabaseFromApi($data, $idEnte, $ano, $periodo, $tipo, $anexo, $esfera);
-            $this->upsertCache($cacheKey);
-            $this->addLog('Atualização concluída e cache renovado.');
-        }
+        $this->getDataFromApi($idEnte, $ano, $periodo, $tipo, $anexo, $esfera);
     }
 
     /**
@@ -132,6 +102,46 @@ class SiconfiService
         }
 
         return [];
+    }
+
+    private function getDataFromApi(string $idEnte, int $ano, int $periodo, string $tipo, ?string $anexo, ?string $esfera): array
+    {
+        $cacheKey = $this->buildCacheKey($idEnte, $ano, $periodo, $tipo, $anexo, $esfera);
+
+        if (!array_key_exists($cacheKey, $this->dataCache)) {
+            $items = $this->callSiconfiRREO($idEnte, $ano, $periodo, $tipo, $anexo, $esfera);
+
+            if ($items === null) {
+                throw new RuntimeException('Não foi possível consultar a API do SICONFI.');
+            }
+
+            $normalized = array_map(fn(array $item) => $this->normalizeFinancialFields($item), $items);
+
+            if (!empty($normalized)) {
+                $primeiro = $normalized[0];
+                $this->metadataCache[$idEnte] = [
+                    'no_ente' => $primeiro['no_ente'] ?? null,
+                    'sg_uf' => $primeiro['sg_uf'] ?? null,
+                ];
+            }
+
+            $this->dataCache[$cacheKey] = $normalized;
+        }
+
+        return $this->dataCache[$cacheKey];
+    }
+
+    private function normalizeFinancialFields(array $item): array
+    {
+        $camposNumericos = ['vl_previsto', 'vl_atualizado', 'vl_realizado', 'vl_ate_periodo'];
+
+        foreach ($camposNumericos as $campo) {
+            if (array_key_exists($campo, $item)) {
+                $item[$campo] = $this->toDecimal($item[$campo]) ?? 0.0;
+            }
+        }
+
+        return $item;
     }
 
     private function fetchItemsWithPagination(array $queryParams, array $headers, int $limit, int $maxPages): ?array
@@ -390,90 +400,175 @@ class SiconfiService
         return array_keys($data) === range(0, count($data) - 1);
     }
 
-    /**
-     * Persiste os dados recebidos da API nas tabelas locais.
-     */
-    public function updateDatabaseFromApi(array $items, string $idEnte, int $ano, int $periodo, string $tipo, ?string $anexo, ?string $esfera): void
+    public function getMunicipioNome(string $idEnte, ?int $ano = null, ?int $periodo = null, ?string $tipo = null, ?string $anexo = null, ?string $esfera = null): ?string
     {
-        $this->pdo->beginTransaction();
-        try {
-            $delete = $this->pdo->prepare('DELETE FROM rreo_registros WHERE id_ente = :id AND an_exercicio = :ano AND nr_periodo = :periodo AND co_tipo_demonstrativo = :tipo');
-            $delete->execute([
-                ':id' => $idEnte,
-                ':ano' => $ano,
-                ':periodo' => $periodo,
-                ':tipo' => $tipo,
-            ]);
-
-            $insert = $this->pdo->prepare('INSERT INTO rreo_registros (
-                id_ente, no_ente, sg_uf, an_exercicio, nr_periodo, co_tipo_demonstrativo,
-                no_anexo, co_esfera, cd_conta, ds_conta, vl_previsto, vl_atualizado, vl_realizado
-            ) VALUES (
-                :id_ente, :no_ente, :sg_uf, :an_exercicio, :nr_periodo, :co_tipo_demonstrativo,
-                :no_anexo, :co_esfera, :cd_conta, :ds_conta, :vl_previsto, :vl_atualizado, :vl_realizado
-            )');
-
-            $inserted = 0;
-            foreach ($items as $item) {
-                $insert->execute([
-                    ':id_ente' => $item['id_ente'] ?? $idEnte,
-                    ':no_ente' => $item['no_ente'] ?? null,
-                    ':sg_uf' => $item['sg_uf'] ?? null,
-                    ':an_exercicio' => (int)($item['an_exercicio'] ?? $ano),
-                    ':nr_periodo' => (int)($item['nr_periodo'] ?? $periodo),
-                    ':co_tipo_demonstrativo' => $item['co_tipo_demonstrativo'] ?? $tipo,
-                    ':no_anexo' => $item['no_anexo'] ?? $anexo,
-                    ':co_esfera' => $item['co_esfera'] ?? $esfera,
-                    ':cd_conta' => $item['cd_conta'] ?? null,
-                    ':ds_conta' => $item['ds_conta'] ?? null,
-                    ':vl_previsto' => $this->toDecimal($item['vl_previsto'] ?? null),
-                    ':vl_atualizado' => $this->toDecimal($item['vl_atualizado'] ?? null),
-                    ':vl_realizado' => $this->toDecimal($item['vl_realizado'] ?? ($item['vl_ate_periodo'] ?? null)),
-                ]);
-                $inserted++;
+        if ($this->pdo instanceof PDO) {
+            $stmt = $this->pdo->prepare('SELECT nome FROM municipios WHERE id_ibge = :id LIMIT 1');
+            $stmt->execute([':id' => $idEnte]);
+            $row = $stmt->fetch();
+            if ($row && isset($row['nome'])) {
+                return $row['nome'];
             }
-
-            $this->pdo->commit();
-            $this->addLog('Registros persistidos no banco de dados.', [
-                'total_inserido' => $inserted,
-            ]);
-        } catch (Throwable $e) {
-            $this->pdo->rollBack();
-            $this->addLog('Erro ao gravar dados no banco.', [
-                'mensagem' => $e->getMessage(),
-            ]);
-            throw $e;
-        }
-    }
-
-    public function getMunicipioNome(string $idEnte): ?string
-    {
-        $stmt = $this->pdo->prepare('SELECT nome FROM municipios WHERE id_ibge = :id LIMIT 1');
-        $stmt->execute([':id' => $idEnte]);
-        $row = $stmt->fetch();
-        if ($row && isset($row['nome'])) {
-            return $row['nome'];
         }
 
-        $stmt = $this->pdo->prepare('SELECT no_ente FROM rreo_registros WHERE id_ente = :id LIMIT 1');
-        $stmt->execute([':id' => $idEnte]);
-        $fallback = $stmt->fetch();
-        return $fallback['no_ente'] ?? null;
+        if (!isset($this->metadataCache[$idEnte]) && $ano !== null && $periodo !== null && $tipo !== null) {
+            $this->getDataFromApi($idEnte, $ano, $periodo, $tipo, $anexo, $esfera);
+        }
+
+        if (isset($this->metadataCache[$idEnte]['no_ente'])) {
+            return $this->metadataCache[$idEnte]['no_ente'];
+        }
+
+        return null;
     }
 
     public function getMunicipiosDisponiveis(): array
     {
+        if (!($this->pdo instanceof PDO)) {
+            return [];
+        }
+
         $stmt = $this->pdo->query('SELECT id_ibge, nome, uf_sigla FROM municipios ORDER BY uf_sigla, nome');
         return $stmt->fetchAll();
     }
 
-    public function getKpis(string $idEnte, int $ano, int $periodo, string $tipo): array
+    public function getKpis(string $idEnte, int $ano, int $periodo, string $tipo, ?string $anexo = null, ?string $esfera = null): array
     {
-        $receitas = $this->sumByConta($idEnte, $ano, $periodo, $tipo, [
+        $items = $this->getDataFromApi($idEnte, $ano, $periodo, $tipo, $anexo, $esfera);
+        return $this->calculateKpisFromItems($items);
+    }
+
+    public function getReceitas(string $idEnte, int $ano, int $periodo, string $tipo, ?string $anexo = null, ?string $esfera = null): array
+    {
+        $items = $this->getDataFromApi($idEnte, $ano, $periodo, $tipo, $anexo, $esfera);
+
+        $categorias = $this->sumByContaFromItems($items, [
+            'Receitas Correntes',
+            'Receitas de Capital',
+            'Transferências Correntes',
+            'Transferências de Capital',
+        ]);
+
+        $impostos = [
+            'ISS' => $this->sumContaLikeFromItems($items, 'ISS'),
+            'IPTU' => $this->sumContaLikeFromItems($items, 'IPTU'),
+            'ITBI' => $this->sumContaLikeFromItems($items, 'ITBI'),
+            'IRRF' => $this->sumContaLikeFromItems($items, 'IRRF'),
+        ];
+
+        return [
+            'categorias' => $categorias,
+            'impostos' => $impostos,
+        ];
+    }
+
+    public function getDespesas(string $idEnte, int $ano, int $periodo, string $tipo, ?string $anexo = null, ?string $esfera = null): array
+    {
+        $items = $this->getDataFromApi($idEnte, $ano, $periodo, $tipo, $anexo, $esfera);
+
+        return [
+            'pessoal' => $this->sumContaLikeFromItems($items, 'Pessoal e Encargos'),
+            'outras_correntes' => $this->sumContaLikeFromItems($items, 'Outras Despesas Correntes'),
+            'investimentos' => $this->sumContaLikeFromItems($items, 'Investimentos'),
+            'reserva' => $this->sumContaLikeFromItems($items, 'Reserva de Contingência'),
+        ];
+    }
+
+    public function getComparativo(string $idEnte, int $anoAtual, int $periodo, string $tipo, ?string $anexo = null, ?string $esfera = null): array
+    {
+        $anoAnterior = $anoAtual - 1;
+
+        try {
+            $kpiAtual = $this->calculateKpisFromItems($this->getDataFromApi($idEnte, $anoAtual, $periodo, $tipo, $anexo, $esfera));
+        } catch (Throwable $e) {
+            $this->addLog('Falha ao carregar dados do ano atual para o comparativo.', [
+                'ano' => $anoAtual,
+                'erro' => $e->getMessage(),
+            ]);
+            $kpiAtual = $this->calculateKpisFromItems([]);
+        }
+
+        try {
+            $kpiAnterior = $this->calculateKpisFromItems($this->getDataFromApi($idEnte, $anoAnterior, $periodo, $tipo, $anexo, $esfera));
+        } catch (Throwable $e) {
+            $this->addLog('Falha ao carregar dados do ano anterior para o comparativo.', [
+                'ano' => $anoAnterior,
+                'erro' => $e->getMessage(),
+            ]);
+            $kpiAnterior = $this->calculateKpisFromItems([]);
+        }
+
+        $comparativo = [];
+        foreach (['receita_total', 'despesa_total', 'resultado_orcamentario'] as $campo) {
+            $atual = $kpiAtual[$campo] ?? 0;
+            $anterior = $kpiAnterior[$campo] ?? 0;
+            $variacao = $anterior > 0 ? (($atual - $anterior) / $anterior) * 100 : null;
+            $comparativo[$campo] = [
+                'atual' => $atual,
+                'anterior' => $anterior,
+                'variacao' => $variacao,
+            ];
+        }
+
+        return $comparativo;
+    }
+
+    public function getDetalhes(string $idEnte, int $ano, int $periodo, string $tipo, ?string $anexo = null, ?string $esfera = null): array
+    {
+        $items = $this->getDataFromApi($idEnte, $ano, $periodo, $tipo, $anexo, $esfera);
+
+        usort($items, function (array $a, array $b) {
+            return strcmp((string)($a['cd_conta'] ?? ''), (string)($b['cd_conta'] ?? ''));
+        });
+
+        return array_map(function (array $item) {
+            return [
+                'cd_conta' => $item['cd_conta'] ?? null,
+                'ds_conta' => $item['ds_conta'] ?? null,
+                'vl_previsto' => $item['vl_previsto'] ?? 0.0,
+                'vl_atualizado' => $item['vl_atualizado'] ?? 0.0,
+                'vl_realizado' => $item['vl_realizado'] ?? ($item['vl_ate_periodo'] ?? 0.0),
+            ];
+        }, $items);
+    }
+
+    private function sumByContaFromItems(array $items, array $contas): array
+    {
+        $resultado = [];
+        foreach ($contas as $conta) {
+            $resultado[$conta] = 0.0;
+        }
+
+        foreach ($items as $item) {
+            $descricao = $item['ds_conta'] ?? '';
+            if (isset($resultado[$descricao])) {
+                $resultado[$descricao] += $this->extractValorRealizado($item);
+            }
+        }
+
+        return $resultado;
+    }
+
+    private function sumContaLikeFromItems(array $items, string $pattern): float
+    {
+        $total = 0.0;
+        foreach ($items as $item) {
+            $descricao = $item['ds_conta'] ?? '';
+            if ($descricao !== '' && stripos($descricao, $pattern) !== false) {
+                $total += $this->extractValorRealizado($item);
+            }
+        }
+
+        return $total;
+    }
+
+    private function calculateKpisFromItems(array $items): array
+    {
+        $receitas = $this->sumByContaFromItems($items, [
             'Receitas Correntes',
             'Receitas de Capital',
         ]);
-        $despesas = $this->sumByConta($idEnte, $ano, $periodo, $tipo, [
+        $despesas = $this->sumByContaFromItems($items, [
             'Despesas com Pessoal e Encargos',
             'Outras Despesas Correntes',
             'Investimentos',
@@ -492,136 +587,17 @@ class SiconfiService
         ];
     }
 
-    public function getReceitas(string $idEnte, int $ano, int $periodo, string $tipo): array
+    private function extractValorRealizado(array $item): float
     {
-        $categorias = [
-            'Receitas Correntes',
-            'Receitas de Capital',
-            'Transferências Correntes',
-            'Transferências de Capital',
-        ];
-
-        $result = [];
-        foreach ($categorias as $categoria) {
-            $result[$categoria] = $this->sumByConta($idEnte, $ano, $periodo, $tipo, [$categoria])[$categoria] ?? 0.0;
+        if (isset($item['vl_realizado']) && $item['vl_realizado'] !== null) {
+            return (float)$item['vl_realizado'];
         }
 
-        $impostos = [
-            'ISS' => $this->sumContaLike($idEnte, $ano, $periodo, $tipo, 'ISS'),
-            'IPTU' => $this->sumContaLike($idEnte, $ano, $periodo, $tipo, 'IPTU'),
-            'ITBI' => $this->sumContaLike($idEnte, $ano, $periodo, $tipo, 'ITBI'),
-            'IRRF' => $this->sumContaLike($idEnte, $ano, $periodo, $tipo, 'IRRF'),
-        ];
-
-        return [
-            'categorias' => $result,
-            'impostos' => $impostos,
-        ];
-    }
-
-    public function getDespesas(string $idEnte, int $ano, int $periodo, string $tipo): array
-    {
-        $pessoal = $this->sumContaLike($idEnte, $ano, $periodo, $tipo, 'Pessoal e Encargos');
-        $outrasCorrentes = $this->sumContaLike($idEnte, $ano, $periodo, $tipo, 'Outras Despesas Correntes');
-        $investimentos = $this->sumContaLike($idEnte, $ano, $periodo, $tipo, 'Investimentos');
-        $reserva = $this->sumContaLike($idEnte, $ano, $periodo, $tipo, 'Reserva de Contingência');
-
-        return [
-            'pessoal' => $pessoal,
-            'outras_correntes' => $outrasCorrentes,
-            'investimentos' => $investimentos,
-            'reserva' => $reserva,
-        ];
-    }
-
-    public function getComparativo(string $idEnte, int $anoAtual, int $periodo, string $tipo): array
-    {
-        $anoAnterior = $anoAtual - 1;
-        $kpiAtual = $this->getKpis($idEnte, $anoAtual, $periodo, $tipo);
-        $kpiAnterior = $this->getKpis($idEnte, $anoAnterior, $periodo, $tipo);
-
-        $comparativo = [];
-        foreach (['receita_total', 'despesa_total', 'resultado_orcamentario'] as $campo) {
-            $atual = $kpiAtual[$campo] ?? 0;
-            $anterior = $kpiAnterior[$campo] ?? 0;
-            $variacao = $anterior > 0 ? (($atual - $anterior) / $anterior) * 100 : null;
-            $comparativo[$campo] = [
-                'atual' => $atual,
-                'anterior' => $anterior,
-                'variacao' => $variacao,
-            ];
+        if (isset($item['vl_ate_periodo']) && $item['vl_ate_periodo'] !== null) {
+            return (float)$item['vl_ate_periodo'];
         }
 
-        return $comparativo;
-    }
-
-    public function getDetalhes(string $idEnte, int $ano, int $periodo, string $tipo): array
-    {
-        $stmt = $this->pdo->prepare('SELECT cd_conta, ds_conta, vl_previsto, vl_atualizado, vl_realizado
-            FROM rreo_registros
-            WHERE id_ente = :id AND an_exercicio = :ano AND nr_periodo = :periodo AND co_tipo_demonstrativo = :tipo
-            ORDER BY cd_conta');
-        $stmt->execute([
-            ':id' => $idEnte,
-            ':ano' => $ano,
-            ':periodo' => $periodo,
-            ':tipo' => $tipo,
-        ]);
-
-        return $stmt->fetchAll();
-    }
-
-    private function sumByConta(string $idEnte, int $ano, int $periodo, string $tipo, array $contas): array
-    {
-        if (empty($contas)) {
-            return [];
-        }
-
-        $placeholders = implode(',', array_fill(0, count($contas), '?'));
-        $sql = 'SELECT ds_conta, SUM(vl_realizado) AS total FROM rreo_registros
-            WHERE id_ente = ? AND an_exercicio = ? AND nr_periodo = ? AND co_tipo_demonstrativo = ?
-            AND ds_conta IN (' . $placeholders . ')
-            GROUP BY ds_conta';
-
-        $params = array_merge([$idEnte, $ano, $periodo, $tipo], $contas);
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->execute($params);
-
-        $result = [];
-        while ($row = $stmt->fetch()) {
-            $result[$row['ds_conta']] = (float)$row['total'];
-        }
-
-        foreach ($contas as $conta) {
-            if (!isset($result[$conta])) {
-                $result[$conta] = 0.0;
-            }
-        }
-
-        return $result;
-    }
-
-    private function sumContaLike(string $idEnte, int $ano, int $periodo, string $tipo, string $pattern): float
-    {
-        $stmt = $this->pdo->prepare('SELECT SUM(vl_realizado) AS total FROM rreo_registros
-            WHERE id_ente = :id AND an_exercicio = :ano AND nr_periodo = :periodo AND co_tipo_demonstrativo = :tipo
-            AND ds_conta LIKE :pattern');
-        $stmt->execute([
-            ':id' => $idEnte,
-            ':ano' => $ano,
-            ':periodo' => $periodo,
-            ':tipo' => $tipo,
-            ':pattern' => '%' . $pattern . '%',
-        ]);
-        $row = $stmt->fetch();
-        return (float)($row['total'] ?? 0.0);
-    }
-
-    private function upsertCache(string $cacheKey): void
-    {
-        $stmt = $this->pdo->prepare('INSERT INTO api_cache (cache_key, fetched_at) VALUES (:key, NOW())
-            ON DUPLICATE KEY UPDATE fetched_at = VALUES(fetched_at)');
-        $stmt->execute([':key' => $cacheKey]);
+        return 0.0;
     }
 
     public function getDebugLog(): array
