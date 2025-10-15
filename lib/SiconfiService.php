@@ -53,16 +53,22 @@ class SiconfiService
         if ($shouldFetch) {
             $this->addLog('Cache expirado ou inexistente. Buscando dados diretamente na API.');
             $data = $this->callSiconfiRREO($idEnte, $ano, $periodo, $tipo, $anexo, $esfera);
-            if ($data !== null) {
-                $this->addLog('Dados obtidos da API SICONFI.', [
-                    'quantidade_registros' => count($data),
-                ]);
-                $this->updateDatabaseFromApi($data, $idEnte, $ano, $periodo, $tipo, $anexo, $esfera);
-                $this->upsertCache($cacheKey);
-                $this->addLog('Atualização concluída e cache renovado.');
-            } else {
+            if ($data === null) {
                 $this->addLog('Nenhum dado retornado pela API. Verifique as mensagens anteriores.');
+                return;
             }
+
+            if (empty($data)) {
+                $this->addLog('API respondeu com zero registros. Dados locais foram preservados para evitar perda de histórico.');
+                return;
+            }
+
+            $this->addLog('Dados obtidos da API SICONFI.', [
+                'quantidade_registros' => count($data),
+            ]);
+            $this->updateDatabaseFromApi($data, $idEnte, $ano, $periodo, $tipo, $anexo, $esfera);
+            $this->upsertCache($cacheKey);
+            $this->addLog('Atualização concluída e cache renovado.');
         }
     }
 
@@ -84,6 +90,8 @@ class SiconfiService
             $baseQuery = array_merge($baseQuery, array_filter(API_ADDITIONAL_QUERY, fn($value) => $value !== null && $value !== ''));
         }
 
+        $queriesToTry = $this->buildQueryAttempts($baseQuery, $periodo);
+
         $limit = defined('API_PAGE_LIMIT') ? (int)API_PAGE_LIMIT : 1000;
         if ($limit <= 0) {
             $limit = 1000;
@@ -96,6 +104,38 @@ class SiconfiService
 
         $headers = $this->buildApiHeaders();
 
+        foreach ($queriesToTry as $index => $queryParams) {
+            $this->addLog('Executando tentativa de consulta à API SICONFI.', [
+                'tentativa' => $index + 1,
+                'parametros' => $queryParams,
+            ]);
+
+            $items = $this->fetchItemsWithPagination($queryParams, $headers, $limit, $maxPages);
+            if ($items === null) {
+                return null;
+            }
+
+            if (!empty($items)) {
+                if ($index > 0) {
+                    $this->addLog('Dados encontrados após aplicar tentativas alternativas.', [
+                        'tentativa_sucesso' => $index + 1,
+                        'total_registros' => count($items),
+                    ]);
+                }
+
+                return $items;
+            }
+
+            $this->addLog('Tentativa concluída sem retorno de registros.', [
+                'tentativa' => $index + 1,
+            ]);
+        }
+
+        return [];
+    }
+
+    private function fetchItemsWithPagination(array $queryParams, array $headers, int $limit, int $maxPages): ?array
+    {
         $offset = 0;
         $page = 0;
         $allItems = [];
@@ -112,11 +152,11 @@ class SiconfiService
             if ($nextUrl !== null) {
                 $requestUrl = $nextUrl;
             } else {
-                $queryParams = array_merge($baseQuery, [
+                $query = array_merge($queryParams, [
                     'limit' => $limit,
                     'offset' => $offset,
                 ]);
-                $requestUrl = API_BASE_URL . API_RREO_ENDPOINT . '?' . http_build_query($queryParams);
+                $requestUrl = API_BASE_URL . API_RREO_ENDPOINT . '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986);
             }
 
             $this->addLog('Consultando API SICONFI.', [
@@ -155,6 +195,65 @@ class SiconfiService
         }
 
         return $allItems;
+    }
+
+    private function buildQueryAttempts(array $baseQuery, int $periodo): array
+    {
+        $attempts = [];
+
+        $candidates = [];
+
+        $withPeriodicidade = $this->appendPeriodicidade($baseQuery, $periodo);
+        if ($withPeriodicidade !== null) {
+            $candidates[] = $withPeriodicidade;
+        }
+
+        $candidates[] = $baseQuery;
+
+        foreach ($candidates as $candidate) {
+            $attempts[] = $candidate;
+
+            if (isset($candidate['co_esfera'])) {
+                $withoutEsfera = $candidate;
+                unset($withoutEsfera['co_esfera']);
+                $attempts[] = $withoutEsfera;
+            }
+        }
+
+        $unique = [];
+        $result = [];
+        foreach ($attempts as $attempt) {
+            ksort($attempt);
+            $key = md5(json_encode($attempt));
+            if (!isset($unique[$key])) {
+                $unique[$key] = true;
+                $result[] = $attempt;
+            }
+        }
+
+        return $result;
+    }
+
+    private function appendPeriodicidade(array $query, int $periodo): ?array
+    {
+        if (isset($query['co_periodicidade'])) {
+            return null;
+        }
+
+        $periodicidade = null;
+
+        if (defined('API_DEFAULT_PERIODICIDADE') && API_DEFAULT_PERIODICIDADE !== '') {
+            $periodicidade = API_DEFAULT_PERIODICIDADE;
+        } elseif ($periodo >= 1 && $periodo <= 6) {
+            $periodicidade = 'B';
+        }
+
+        if ($periodicidade === null) {
+            return null;
+        }
+
+        $query['co_periodicidade'] = $periodicidade;
+        return $query;
     }
 
     private function performApiRequest(string $url, array $headers): ?array
