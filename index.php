@@ -7,7 +7,7 @@ $defaultParams = [
     'nr_periodo' => 6,
     'co_tipo_demonstrativo' => 'RREO',
     'id_ente' => '3550308', // São Paulo - exemplo real
-    'no_anexo' => null,
+    'no_anexo' => 'RREO-Anexo 02',
     'co_esfera' => 'M',
 ];
 
@@ -23,6 +23,7 @@ $params = [
 $service = new SiconfiService();
 $errorMessage = null;
 $municipiosDisponiveis = $service->getMunicipiosDisponiveis();
+$anexosDisponiveis = $service->getAnexosDisponiveis();
 
 $municipio = 'Município não identificado';
 $kpis = [
@@ -43,7 +44,8 @@ $despesas = [
     'reserva' => 0.0,
 ];
 $comparativo = [];
-$detalhes = [];
+$detalhes = ['colunas' => [], 'linhas' => []];
+$selectedAnexoLabel = $service->getAnexoLabel($params['no_anexo']);
 
 try {
     $municipio = $service->getMunicipioNome(
@@ -111,6 +113,9 @@ $dashboardData = [
     'despesas' => $despesas,
     'comparativo' => $comparativo,
     'detalhes' => $detalhes,
+    'anexos' => $anexosDisponiveis,
+    'selected_anexo_label' => $selectedAnexoLabel,
+    'selected_anexo' => $params['no_anexo'],
     'debug_log' => $service->getDebugLog(),
 ];
 ?>
@@ -158,6 +163,11 @@ $dashboardData = [
                         <span class="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 font-medium">
                             Exercício <?php echo htmlspecialchars((string)$params['an_exercicio']); ?>
                         </span>
+                        <?php if ($selectedAnexoLabel): ?>
+                            <span class="inline-flex items-center gap-2 rounded-full bg-fuchsia-50 px-3 py-1 font-medium text-fuchsia-700">
+                                <?php echo htmlspecialchars($selectedAnexoLabel); ?>
+                            </span>
+                        <?php endif; ?>
                         <span class="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 font-medium">
                             <?php echo htmlspecialchars($params['nr_periodo']); ?>º bimestre
                         </span>
@@ -211,8 +221,17 @@ $dashboardData = [
                         </select>
                     </div>
                     <div>
-                        <label class="text-sm font-semibold text-slate-600">Anexo (opcional)</label>
-                        <input type="text" name="no_anexo" value="<?php echo htmlspecialchars((string)$params['no_anexo']); ?>" class="mt-2 w-full rounded-2xl border border-indigo-100 bg-white/80 px-3 py-2 text-sm text-slate-700 shadow-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-300/80" placeholder="Nome do anexo">
+                        <label class="text-sm font-semibold text-slate-600">Anexo</label>
+                        <select name="no_anexo" class="mt-2 w-full rounded-2xl border border-indigo-100 bg-white/80 px-3 py-2 text-sm text-slate-700 shadow-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-300/80">
+                            <option value="">Todos os anexos</option>
+                            <?php foreach ($anexosDisponiveis as $valorAnexo => $descricaoAnexo): ?>
+                                <?php $selectedAnexo = $valorAnexo === $params['no_anexo'] ? 'selected' : ''; ?>
+                                <option value="<?php echo htmlspecialchars($valorAnexo); ?>" <?php echo $selectedAnexo; ?>>
+                                    <?php echo htmlspecialchars($descricaoAnexo); ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                        <p class="text-xs text-slate-500 mt-1">Selecione o anexo desejado para atualizar os indicadores.</p>
                     </div>
                     <div class="sm:col-span-2 xl:col-span-3 flex justify-end items-end">
                         <button type="submit" class="inline-flex items-center gap-2 px-6 py-3 rounded-2xl font-semibold bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500 text-white shadow-lg shadow-fuchsia-200/60 transition-transform hover:-translate-y-0.5 hover:shadow-xl">
@@ -363,6 +382,16 @@ $dashboardData = [
                     <tbody id="comparativo-tabela"></tbody>
                 </table>
             </div>
+            <div class="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1">
+                    <h2 class="text-lg font-semibold text-gray-800 mb-4">Gastos por Coluna</h2>
+                    <ul id="lista-despesa-coluna" class="space-y-3 text-sm text-gray-600"></ul>
+                </div>
+                <div class="bg-white/80 backdrop-blur rounded-3xl p-6 shadow-lg shadow-indigo-100/60 border border-white/70 transition-transform hover:-translate-y-1">
+                    <h2 class="text-lg font-semibold text-gray-800 mb-4">Receitas por Coluna</h2>
+                    <ul id="lista-receita-coluna" class="space-y-3 text-sm text-gray-600"></ul>
+                </div>
+            </div>
         </section>
 
         <section id="tab-detalhes" class="tab-content hidden">
@@ -371,13 +400,7 @@ $dashboardData = [
                 <div class="overflow-x-auto">
                     <table class="min-w-full divide-y divide-gray-200 text-sm text-gray-600">
                         <thead class="bg-gray-50">
-                            <tr class="text-xs uppercase tracking-wide text-gray-500">
-                                <th class="px-4 py-3 text-left">Código</th>
-                                <th class="px-4 py-3 text-left">Descrição</th>
-                                <th class="px-4 py-3 text-right">Previsto</th>
-                                <th class="px-4 py-3 text-right">Atualizado</th>
-                                <th class="px-4 py-3 text-right">Realizado</th>
-                            </tr>
+                            <tr id="detalhes-head-row" class="text-xs uppercase tracking-wide text-gray-500"></tr>
                         </thead>
                         <tbody id="detalhes-tabela" class="divide-y divide-gray-100"></tbody>
                     </table>
@@ -500,22 +523,98 @@ $dashboardData = [
                 `;
                 tabela.appendChild(tr);
             });
+
+            const listaDespesaColuna = document.getElementById('lista-despesa-coluna');
+            const listaReceitaColuna = document.getElementById('lista-receita-coluna');
+            listaDespesaColuna.innerHTML = '';
+            listaReceitaColuna.innerHTML = '';
+
+            const despesasPorColuna = dashboardData.despesas?.por_coluna || {};
+            const receitasPorColuna = dashboardData.receitas?.por_coluna || {};
+
+            Object.entries(despesasPorColuna).forEach(([coluna, valor]) => {
+                const li = document.createElement('li');
+                li.className = 'flex items-center justify-between rounded-2xl bg-gradient-to-r from-purple-50 to-indigo-50 px-4 py-3 shadow-sm';
+                li.innerHTML = `<span class="font-medium text-gray-600">${coluna}</span><span class="font-semibold text-purple-600">${formatCurrency(valor)}</span>`;
+                listaDespesaColuna.appendChild(li);
+            });
+
+            if (listaDespesaColuna.children.length === 0) {
+                const li = document.createElement('li');
+                li.className = 'text-sm text-gray-500';
+                li.textContent = 'Nenhum dado de despesa agrupado por coluna.';
+                listaDespesaColuna.appendChild(li);
+            }
+
+            Object.entries(receitasPorColuna).forEach(([coluna, valor]) => {
+                const li = document.createElement('li');
+                li.className = 'flex items-center justify-between rounded-2xl bg-gradient-to-r from-emerald-50 to-sky-50 px-4 py-3 shadow-sm';
+                li.innerHTML = `<span class="font-medium text-gray-600">${coluna}</span><span class="font-semibold text-emerald-600">${formatCurrency(valor)}</span>`;
+                listaReceitaColuna.appendChild(li);
+            });
+
+            if (listaReceitaColuna.children.length === 0) {
+                const li = document.createElement('li');
+                li.className = 'text-sm text-gray-500';
+                li.textContent = 'Nenhum dado de receita agrupado por coluna.';
+                listaReceitaColuna.appendChild(li);
+            }
         }
 
         function updateDetalhes() {
+            const detalhes = dashboardData.detalhes || {};
+            const colunas = detalhes.colunas || [];
+            const linhas = detalhes.linhas || [];
             const corpo = document.getElementById('detalhes-tabela');
+            const cabecalho = document.getElementById('detalhes-head-row');
+
+            cabecalho.innerHTML = '';
+            const thCodigo = document.createElement('th');
+            thCodigo.className = 'px-4 py-3 text-left';
+            thCodigo.textContent = 'Código';
+            cabecalho.appendChild(thCodigo);
+
+            const thDescricao = document.createElement('th');
+            thDescricao.className = 'px-4 py-3 text-left';
+            thDescricao.textContent = 'Descrição';
+            cabecalho.appendChild(thDescricao);
+
+            colunas.forEach((coluna) => {
+                const th = document.createElement('th');
+                th.className = 'px-4 py-3 text-right';
+                th.textContent = coluna;
+                cabecalho.appendChild(th);
+            });
+
             corpo.innerHTML = '';
-            (dashboardData.detalhes || []).forEach((linha) => {
+
+            linhas.forEach((linha) => {
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td class="px-4 py-3 whitespace-nowrap">${linha.cd_conta || '—'}</td>
-                    <td class="px-4 py-3">${linha.ds_conta || '—'}</td>
-                    <td class="px-4 py-3 text-right">${formatCurrency(Number(linha.vl_previsto) || 0)}</td>
-                    <td class="px-4 py-3 text-right">${formatCurrency(Number(linha.vl_atualizado) || 0)}</td>
-                    <td class="px-4 py-3 text-right">${formatCurrency(Number(linha.vl_realizado) || 0)}</td>
+                    <td class="px-4 py-3 whitespace-nowrap">${linha.codigo || '—'}</td>
+                    <td class="px-4 py-3">${linha.descricao || '—'}</td>
                 `;
+
+                colunas.forEach((coluna) => {
+                    const td = document.createElement('td');
+                    td.className = 'px-4 py-3 text-right';
+                    const valor = linha.valores?.[coluna] ?? 0;
+                    td.textContent = formatCurrency(Number(valor) || 0);
+                    tr.appendChild(td);
+                });
+
                 corpo.appendChild(tr);
             });
+
+            if (linhas.length === 0) {
+                const tr = document.createElement('tr');
+                const td = document.createElement('td');
+                td.colSpan = colunas.length + 2;
+                td.className = 'px-4 py-3 text-center text-sm text-gray-500';
+                td.textContent = 'Nenhum registro encontrado para os filtros informados.';
+                tr.appendChild(td);
+                corpo.appendChild(tr);
+            }
         }
 
         function buildCharts() {
