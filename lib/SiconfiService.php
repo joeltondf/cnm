@@ -539,15 +539,24 @@ class SiconfiService
 
         foreach ($contas as $conta) {
             $resultado[$conta] = 0.0;
-            $contasBusca[strtolower($conta)] = $conta;
+            $contasBusca[$conta] = $this->normalizeDescricao($conta);
         }
 
         foreach ($items as $item) {
-            $descricao = strtolower($item['ds_conta'] ?? '');
+            $descricao = $this->normalizeDescricao($item['ds_conta'] ?? null);
+            if ($descricao === '') {
+                continue;
+            }
 
-            if (isset($contasBusca[$descricao])) {
-                $chaveOriginal = $contasBusca[$descricao];
-                $resultado[$chaveOriginal] += $this->extractValorRealizado($item);
+            foreach ($contasBusca as $contaOriginal => $contaNormalizada) {
+                if ($contaNormalizada === '') {
+                    continue;
+                }
+
+                if ($descricao === $contaNormalizada || str_contains($descricao, $contaNormalizada)) {
+                    $resultado[$contaOriginal] += $this->extractValorRealizado($item);
+                    break;
+                }
             }
         }
 
@@ -557,9 +566,15 @@ class SiconfiService
     private function sumContaLikeFromItems(array $items, string $pattern): float
     {
         $total = 0.0;
+        $patternNormalizado = $this->normalizeDescricao($pattern);
+
+        if ($patternNormalizado === '') {
+            return 0.0;
+        }
+
         foreach ($items as $item) {
-            $descricao = $item['ds_conta'] ?? '';
-            if ($descricao !== '' && stripos($descricao, $pattern) !== false) {
+            $descricao = $this->normalizeDescricao($item['ds_conta'] ?? null);
+            if ($descricao !== '' && str_contains($descricao, $patternNormalizado)) {
                 $total += $this->extractValorRealizado($item);
             }
         }
@@ -639,6 +654,48 @@ class SiconfiService
         }
 
         return (float)$value;
+    }
+
+    private function normalizeDescricao(?string $descricao): string
+    {
+        if ($descricao === null) {
+            return '';
+        }
+
+        $descricao = trim($descricao);
+        if ($descricao === '') {
+            return '';
+        }
+
+        $descricao = preg_replace('/\s+/u', ' ', $descricao);
+        if ($descricao === null) {
+            $descricao = '';
+        }
+
+        if ($descricao === '') {
+            return '';
+        }
+
+        $descricao = strtr($descricao, [
+            'Á' => 'A', 'À' => 'A', 'Ã' => 'A', 'Â' => 'A', 'Ä' => 'A', 'á' => 'a', 'à' => 'a', 'ã' => 'a', 'â' => 'a', 'ä' => 'a',
+            'É' => 'E', 'Ê' => 'E', 'Ë' => 'E', 'é' => 'e', 'ê' => 'e', 'ë' => 'e',
+            'Í' => 'I', 'Î' => 'I', 'Ï' => 'I', 'í' => 'i', 'î' => 'i', 'ï' => 'i',
+            'Ó' => 'O', 'Õ' => 'O', 'Ô' => 'O', 'Ö' => 'O', 'ó' => 'o', 'õ' => 'o', 'ô' => 'o', 'ö' => 'o',
+            'Ú' => 'U', 'Û' => 'U', 'Ü' => 'U', 'ú' => 'u', 'û' => 'u', 'ü' => 'u',
+            'Ç' => 'C', 'ç' => 'c',
+        ]);
+
+        if ($descricao === '') {
+            return '';
+        }
+
+        if (function_exists('mb_strtolower')) {
+            $descricao = mb_strtolower($descricao, 'UTF-8');
+        } else {
+            $descricao = strtolower($descricao);
+        }
+
+        return $descricao;
     }
 
     private function addLog(string $message, array $context = []): void
