@@ -9,6 +9,7 @@ class SiconfiService
 {
     private PDO $pdo;
     private static int $lastRequestTimestamp = 0;
+    private array $debugLog = [];
 
     public function __construct()
     {
@@ -20,6 +21,15 @@ class SiconfiService
      */
     public function ensureData(string $idEnte, int $ano, int $periodo, string $tipo, ?string $anexo = null, ?string $esfera = null): void
     {
+        $this->addLog('Iniciando sincronização com parâmetros informados.', [
+            'id_ente' => $idEnte,
+            'ano' => $ano,
+            'periodo' => $periodo,
+            'tipo' => $tipo,
+            'anexo' => $anexo,
+            'esfera' => $esfera,
+        ]);
+
         $cacheKey = $this->buildCacheKey($idEnte, $ano, $periodo, $tipo, $anexo, $esfera);
         $stmt = $this->pdo->prepare('SELECT fetched_at FROM api_cache WHERE cache_key = :cache_key');
         $stmt->execute([':cache_key' => $cacheKey]);
@@ -33,14 +43,25 @@ class SiconfiService
             $diffHours = ($diff->days * 24) + $diff->h + ($diff->i / 60);
             if ($diffHours < CACHE_TTL_HOURS) {
                 $shouldFetch = false;
+                $this->addLog('Utilizando dados em cache.', [
+                    'ultima_atualizacao' => $fetchedAt->format('Y-m-d H:i:s'),
+                    'horas_desde_cache' => round($diffHours, 2),
+                ]);
             }
         }
 
         if ($shouldFetch) {
+            $this->addLog('Cache expirado ou inexistente. Buscando dados diretamente na API.');
             $data = $this->callSiconfiRREO($idEnte, $ano, $periodo, $tipo, $anexo, $esfera);
             if ($data !== null) {
+                $this->addLog('Dados obtidos da API SICONFI.', [
+                    'quantidade_registros' => count($data),
+                ]);
                 $this->updateDatabaseFromApi($data, $idEnte, $ano, $periodo, $tipo, $anexo, $esfera);
                 $this->upsertCache($cacheKey);
+                $this->addLog('Atualização concluída e cache renovado.');
+            } else {
+                $this->addLog('Nenhum dado retornado pela API. Verifique as mensagens anteriores.');
             }
         }
     }
@@ -82,7 +103,9 @@ class SiconfiService
 
         while (true) {
             if ($page >= $maxPages) {
-                error_log(sprintf('Limite de páginas (%d) atingido ao consultar API SICONFI.', $maxPages));
+                $message = sprintf('Limite de páginas (%d) atingido ao consultar API SICONFI.', $maxPages);
+                error_log($message);
+                $this->addLog($message);
                 break;
             }
 
@@ -96,12 +119,21 @@ class SiconfiService
                 $requestUrl = API_BASE_URL . API_RREO_ENDPOINT . '?' . http_build_query($queryParams);
             }
 
+            $this->addLog('Consultando API SICONFI.', [
+                'url' => $requestUrl,
+                'pagina' => $page + 1,
+            ]);
             $response = $this->performApiRequest($requestUrl, $headers);
             if ($response === null) {
                 return null;
             }
 
             $items = $this->extractItemsFromResponse($response);
+            $this->addLog('Resposta recebida da API.', [
+                'pagina' => $page + 1,
+                'quantidade_registros' => (is_array($items) || $items instanceof \Countable) ? count($items) : 0,
+            ]);
+
             if (!empty($items)) {
                 $allItems = array_merge($allItems, $items);
             }
@@ -129,6 +161,11 @@ class SiconfiService
     {
         $this->respectRateLimit();
 
+        $this->addLog('Enviando requisição HTTP.', [
+            'url' => $url,
+            'cabecalhos' => $headers,
+        ]);
+
         $options = [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => 30,
@@ -145,7 +182,9 @@ class SiconfiService
 
         $response = curl_exec($ch);
         if ($response === false) {
-            error_log('Erro ao consultar API SICONFI: ' . curl_error($ch));
+            $error = 'Erro ao consultar API SICONFI: ' . curl_error($ch);
+            error_log($error);
+            $this->addLog($error);
             curl_close($ch);
             return null;
         }
@@ -154,15 +193,23 @@ class SiconfiService
         curl_close($ch);
 
         if ($httpCode >= 400) {
-            error_log(sprintf('Erro HTTP %d ao consultar API SICONFI em %s', $httpCode, $url));
+            $message = sprintf('Erro HTTP %d ao consultar API SICONFI em %s', $httpCode, $url);
+            error_log($message);
+            $this->addLog($message);
             return null;
         }
 
         $decoded = json_decode($response, true);
         if (!is_array($decoded)) {
-            error_log('Resposta inválida da API SICONFI');
+            $message = 'Resposta inválida da API SICONFI';
+            error_log($message);
+            $this->addLog($message);
             return null;
         }
+
+        $this->addLog('Requisição HTTP concluída com sucesso.', [
+            'codigo_http' => $httpCode,
+        ]);
 
         return $decoded;
     }
@@ -258,6 +305,7 @@ class SiconfiService
                 :no_anexo, :co_esfera, :cd_conta, :ds_conta, :vl_previsto, :vl_atualizado, :vl_realizado
             )');
 
+            $inserted = 0;
             foreach ($items as $item) {
                 $insert->execute([
                     ':id_ente' => $item['id_ente'] ?? $idEnte,
@@ -274,11 +322,18 @@ class SiconfiService
                     ':vl_atualizado' => $this->toDecimal($item['vl_atualizado'] ?? null),
                     ':vl_realizado' => $this->toDecimal($item['vl_realizado'] ?? ($item['vl_ate_periodo'] ?? null)),
                 ]);
+                $inserted++;
             }
 
             $this->pdo->commit();
+            $this->addLog('Registros persistidos no banco de dados.', [
+                'total_inserido' => $inserted,
+            ]);
         } catch (Throwable $e) {
             $this->pdo->rollBack();
+            $this->addLog('Erro ao gravar dados no banco.', [
+                'mensagem' => $e->getMessage(),
+            ]);
             throw $e;
         }
     }
@@ -461,6 +516,11 @@ class SiconfiService
         $stmt->execute([':key' => $cacheKey]);
     }
 
+    public function getDebugLog(): array
+    {
+        return $this->debugLog;
+    }
+
     private function respectRateLimit(): void
     {
         $now = (int)(microtime(true) * 1_000_000);
@@ -487,5 +547,14 @@ class SiconfiService
         }
 
         return (float)$value;
+    }
+
+    private function addLog(string $message, array $context = []): void
+    {
+        $this->debugLog[] = [
+            'timestamp' => (new DateTimeImmutable())->format('Y-m-d H:i:s'),
+            'message' => $message,
+            'context' => $context,
+        ];
     }
 }
