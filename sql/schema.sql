@@ -1,7 +1,15 @@
 CREATE TABLE IF NOT EXISTS api_cache (
     cache_key CHAR(40) NOT NULL PRIMARY KEY,
-    fetched_at DATETIME NOT NULL
+    fetched_at DATETIME NOT NULL,
+    payload LONGTEXT NULL,
+    INDEX idx_api_cache_fetched_at (fetched_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+ALTER TABLE api_cache
+    ADD COLUMN IF NOT EXISTS payload LONGTEXT NULL AFTER fetched_at;
+
+ALTER TABLE api_cache
+    ADD INDEX IF NOT EXISTS idx_api_cache_fetched_at (fetched_at);
 
 CREATE TABLE IF NOT EXISTS municipios (
     id_ibge INT NOT NULL PRIMARY KEY,

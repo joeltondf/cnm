@@ -12,6 +12,8 @@ class SiconfiService
     private array $debugLog = [];
     private array $dataCache = [];
     private array $metadataCache = [];
+    private bool $cacheTableChecked = false;
+    private bool $cacheTableSupportsPayload = false;
 
     public function __construct()
     {
@@ -109,26 +111,49 @@ class SiconfiService
         $cacheKey = $this->buildCacheKey($idEnte, $ano, $periodo, $tipo, $anexo, $esfera);
 
         if (!array_key_exists($cacheKey, $this->dataCache)) {
-            $items = $this->callSiconfiRREO($idEnte, $ano, $periodo, $tipo, $anexo, $esfera);
+            $staleItems = null;
 
-            if ($items === null) {
-                throw new RuntimeException('Não foi possível consultar a API do SICONFI.');
-            }
-
-            $normalized = array_map(fn(array $item) => $this->normalizeFinancialFields($item), $items);
-
-            if (!empty($normalized)) {
-                $primeiro = $normalized[0];
-                $this->metadataCache[$idEnte] = [
-                    'no_ente' => $primeiro['no_ente'] ?? null,
-                    'sg_uf' => $primeiro['sg_uf'] ?? null,
+            $cachedResult = $this->loadFromDatabase($cacheKey);
+            if ($cachedResult !== null) {
+                $this->updateMetadataCacheFromItems($idEnte, $cachedResult['items']);
+                $logContext = [
+                    'cache_key' => $cacheKey,
+                    'fetched_at' => $cachedResult['fetched_at']->format('Y-m-d H:i:s'),
+                    'quantidade_registros' => count($cachedResult['items']),
                 ];
+
+                if ($cachedResult['is_fresh']) {
+                    $this->addLog('Dados recuperados do cache local.', $logContext);
+                    $this->dataCache[$cacheKey] = $cachedResult['items'];
+                } else {
+                    $this->addLog('Cache local encontrado, porém expirado.', $logContext);
+                    $staleItems = $cachedResult['items'];
+                }
             }
 
-            $this->dataCache[$cacheKey] = $normalized;
+            if (!array_key_exists($cacheKey, $this->dataCache)) {
+                $items = $this->callSiconfiRREO($idEnte, $ano, $periodo, $tipo, $anexo, $esfera);
+
+                if ($items === null) {
+                    if ($staleItems !== null) {
+                        $this->addLog('API indisponível. Utilizando dados expirados do cache local.', [
+                            'cache_key' => $cacheKey,
+                            'quantidade_registros' => count($staleItems),
+                        ]);
+                        $this->dataCache[$cacheKey] = $staleItems;
+                    } else {
+                        throw new RuntimeException('Não foi possível consultar a API do SICONFI.');
+                    }
+                } else {
+                    $normalized = array_map(fn(array $item) => $this->normalizeFinancialFields($item), $items);
+                    $this->updateMetadataCacheFromItems($idEnte, $normalized);
+                    $this->dataCache[$cacheKey] = $normalized;
+                    $this->saveToDatabase($cacheKey, $normalized);
+                }
+            }
         }
 
-        return $this->dataCache[$cacheKey];
+        return $this->dataCache[$cacheKey] ?? [];
     }
 
     private function normalizeFinancialFields(array $item): array
@@ -830,6 +855,189 @@ class SiconfiService
         }
 
         return 0.0;
+    }
+
+    private function updateMetadataCacheFromItems(string $idEnte, array $items): void
+    {
+        if ($items === []) {
+            return;
+        }
+
+        $primeiro = $items[0] ?? null;
+        if (!is_array($primeiro)) {
+            return;
+        }
+
+        $nome = $primeiro['no_ente'] ?? null;
+        $uf = $primeiro['sg_uf'] ?? null;
+
+        if ($nome !== null || $uf !== null) {
+            $this->metadataCache[$idEnte] = [
+                'no_ente' => $nome,
+                'sg_uf' => $uf,
+            ];
+        }
+    }
+
+    private function ensureCacheTableSupportsPayload(): bool
+    {
+        if ($this->cacheTableChecked) {
+            return $this->cacheTableSupportsPayload;
+        }
+
+        if (!($this->pdo instanceof PDO)) {
+            return false;
+        }
+
+        try {
+            $tableResult = $this->pdo->query("SHOW TABLES LIKE 'api_cache'");
+            $tableExists = $tableResult !== false && $tableResult->fetchColumn() !== false;
+
+            if (!$tableExists) {
+                $this->pdo->exec(<<<'SQL'
+CREATE TABLE api_cache (
+    cache_key CHAR(40) NOT NULL PRIMARY KEY,
+    fetched_at DATETIME NOT NULL,
+    payload LONGTEXT NULL,
+    INDEX idx_api_cache_fetched_at (fetched_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+SQL
+                );
+            }
+
+            $columnResult = $this->pdo->query("SHOW COLUMNS FROM api_cache LIKE 'payload'");
+            $columnExists = $columnResult !== false && $columnResult->fetchColumn() !== false;
+            if (!$columnExists) {
+                $this->pdo->exec('ALTER TABLE api_cache ADD COLUMN payload LONGTEXT NULL');
+            }
+
+            try {
+                $this->pdo->exec('CREATE INDEX idx_api_cache_fetched_at ON api_cache (fetched_at)');
+            } catch (Throwable $indexException) {
+                if (stripos($indexException->getMessage(), 'duplicate') === false) {
+                    $this->addLog('Não foi possível criar índice para o cache local.', [
+                        'erro' => $indexException->getMessage(),
+                    ]);
+                }
+            }
+
+            $this->cacheTableSupportsPayload = true;
+        } catch (Throwable $e) {
+            $this->cacheTableSupportsPayload = false;
+            $this->addLog('Não foi possível preparar a estrutura de cache local.', [
+                'erro' => $e->getMessage(),
+            ]);
+        }
+
+        $this->cacheTableChecked = true;
+        return $this->cacheTableSupportsPayload;
+    }
+
+    private function loadFromDatabase(string $cacheKey): ?array
+    {
+        if (!($this->pdo instanceof PDO) || !$this->ensureCacheTableSupportsPayload()) {
+            return null;
+        }
+
+        try {
+            $stmt = $this->pdo->prepare('SELECT payload, fetched_at FROM api_cache WHERE cache_key = :key LIMIT 1');
+            $stmt->execute([':key' => $cacheKey]);
+            $row = $stmt->fetch();
+
+            if (!$row) {
+                return null;
+            }
+
+            $payload = $row['payload'] ?? null;
+            if ($payload === null || $payload === '') {
+                return null;
+            }
+
+            try {
+                $decoded = json_decode($payload, true, 512, JSON_THROW_ON_ERROR);
+            } catch (JsonException $e) {
+                $this->addLog('Falha ao decodificar dados armazenados no cache local.', [
+                    'erro' => $e->getMessage(),
+                ]);
+                return null;
+            }
+
+            if (!is_array($decoded)) {
+                return null;
+            }
+
+            $items = array_map(
+                fn($item) => is_array($item) ? $this->normalizeFinancialFields($item) : [],
+                $decoded
+            );
+
+            if (empty($row['fetched_at'])) {
+                return null;
+            }
+
+            try {
+                $fetchedAt = new DateTimeImmutable($row['fetched_at']);
+            } catch (Throwable $e) {
+                $this->addLog('Registro de cache com data inválida.', [
+                    'erro' => $e->getMessage(),
+                ]);
+                return null;
+            }
+
+            $ttlHours = $this->getCacheTtlHours();
+            $isFresh = false;
+            if ($ttlHours > 0) {
+                $threshold = (new DateTimeImmutable())->sub(new DateInterval(sprintf('PT%dH', $ttlHours)));
+                $isFresh = $fetchedAt >= $threshold;
+            }
+
+            return [
+                'items' => $items,
+                'is_fresh' => $isFresh,
+                'fetched_at' => $fetchedAt,
+            ];
+        } catch (Throwable $e) {
+            $this->addLog('Erro ao recuperar dados do cache local.', [
+                'erro' => $e->getMessage(),
+            ]);
+        }
+
+        return null;
+    }
+
+    private function saveToDatabase(string $cacheKey, array $items): void
+    {
+        if (!($this->pdo instanceof PDO) || !$this->ensureCacheTableSupportsPayload()) {
+            return;
+        }
+
+        try {
+            $payload = json_encode($items, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION);
+            $stmt = $this->pdo->prepare('INSERT INTO api_cache (cache_key, fetched_at, payload) VALUES (:key, NOW(), :payload) ON DUPLICATE KEY UPDATE fetched_at = VALUES(fetched_at), payload = VALUES(payload)');
+            $stmt->execute([
+                ':key' => $cacheKey,
+                ':payload' => $payload,
+            ]);
+
+            $this->addLog('Cache local atualizado.', [
+                'cache_key' => $cacheKey,
+                'quantidade_registros' => count($items),
+            ]);
+        } catch (JsonException $e) {
+            $this->addLog('Não foi possível preparar os dados para cache local.', [
+                'erro' => $e->getMessage(),
+            ]);
+        } catch (Throwable $e) {
+            $this->addLog('Erro ao salvar dados no cache local.', [
+                'erro' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function getCacheTtlHours(): int
+    {
+        $ttl = defined('CACHE_TTL_HOURS') ? (int)CACHE_TTL_HOURS : 24;
+        return max($ttl, 0);
     }
 
     public function getDebugLog(): array
